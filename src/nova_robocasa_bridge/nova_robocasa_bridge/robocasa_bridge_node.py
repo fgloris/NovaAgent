@@ -28,6 +28,7 @@ ACTION_KEYS = (
 )
 
 
+# 12 维动作向量 → RoboCasa 动作 dict(缺省补零并截断到 [-1,1])
 def action_vector_to_dict(values: np.ndarray) -> dict[str, list[float]]:
     values = np.ravel(values).astype(np.float32)
     if values.size > 12:
@@ -55,6 +56,7 @@ def decode_array(payload: dict[str, Any]) -> np.ndarray:
     return array.reshape(payload["shape"])
 
 
+# 递归还原观测:把 base64 编码的 __ndarray__ 解码回 numpy 数组
 def decode_observation(value: Any) -> Any:
     if isinstance(value, dict) and value.get("__ndarray__") is True:
         return decode_array(value)
@@ -65,6 +67,7 @@ def decode_observation(value: Any) -> Any:
     return value
 
 
+# 压缩观测值用于 topic 发布,大数组只保留 shape/dtype/min/max
 def summarize_value(value: Any) -> Any:
     if isinstance(value, np.ndarray):
         if value.size > 32:
@@ -100,6 +103,7 @@ class JsonLineClient:
             self.sock.close()
             self.sock = None
 
+    # 发送一行 JSON 请求并读取一行响应,失败时关闭连接
     def request(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._connect()
         assert self.sock is not None
@@ -191,6 +195,7 @@ class RoboCasaBridgeNode(Node):
         period = 1.0 / max(self.publish_rate_hz, 0.1)
         self.timer = self.create_timer(period, self.timer_callback)
 
+    # 重置仿真环境并发布初始观测
     def _reset_env(self) -> None:
         response = self._server_request(
             {
@@ -247,6 +252,7 @@ class RoboCasaBridgeNode(Node):
             response.message = str(exc)
         return response
 
+    # 给零动作，让仿真空推一帧
     def step_zero_callback(self, request: Trigger.Request, response: Trigger.Response):
         del request
         try:
@@ -259,6 +265,7 @@ class RoboCasaBridgeNode(Node):
             response.message = str(exc)
         return response
 
+    # 定时器驱动:每次调用向 sim server 发 step,推进仿真一帧
     def timer_callback(self) -> None:
         try:
             if self.zero_action_on_start and self.step_count == 0:
@@ -267,6 +274,7 @@ class RoboCasaBridgeNode(Node):
         except Exception:
             self.get_logger().error(traceback.format_exc())
 
+    # 单步推进仿真:发送当前动作,更新 reward/success/done 并发布观测
     def _step_once(self) -> None:
         response = self._server_request(
             {"type": "step", "action": self.latest_action}
@@ -284,6 +292,7 @@ class RoboCasaBridgeNode(Node):
         self._ensure_camera_publishers(self.obs)
         self._publish_observation()
 
+    # 发布 state/reward/success 及所有相机话题
     def _publish_observation(self) -> None:
         if self.obs is None:
             return
