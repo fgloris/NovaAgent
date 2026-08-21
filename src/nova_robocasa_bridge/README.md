@@ -65,35 +65,43 @@ source install/setup.bash
 ros2 launch nova_robocasa_bridge robocasa_bridge.launch.py
 ```
 
-In another terminal:
+The launch file starts both the ROS bridge and the RoboCasa sim server (in the
+`robocasa` conda environment, default Python 3.11 at
+`/home/ginger/miniconda3/envs/robocasa/bin/python`). Set
+`with_sim_server:=false` to skip the sim server, or `sim_python:=<path>` to
+point at a different conda interpreter.
+
+In another terminal, drive the robot manually or with random actions:
 
 ```bash
-conda activate robocasa
 source /opt/ros/humble/setup.bash
 source /home/ginger/Documents/workspace/CapX/NovaAgent/install/setup.bash
-ros2 run nova_robocasa_bridge random_action_client
+ros2 run nova_robocasa_bridge teleop_keyboard
+# or: ros2 run nova_robocasa_bridge random_action_client
 ```
 
-Start the RoboCasa sim server in the RoboCasa conda environment:
+## Scene configuration
 
-```bash
-conda activate robocasa
-cd /home/ginger/Documents/workspace/CapX/NovaAgent
-PYTHONPATH=/home/ginger/Documents/workspace/CapX/NovaAgent/src/nova_robocasa_bridge \
-  python -m nova_robocasa_bridge.robocasa_sim_server --host 127.0.0.1 --port 8765
-```
+Robot and scene layout/style are configured in `config/scene.yaml`, which is
+loaded by the bridge and forwarded to the sim server on every reset:
+
+- `robots`: robosuite robot name (default `PandaOmron`). The RoboCasa gym
+  wrapper's action/camera mapping is hardcoded for PandaOmron, so switching
+  robots needs care.
+- `split`: `target` (fixed 10 test scenes), `pretrain`, `all` (random), or
+  `null` to use explicit layout/style ids below.
+- `layout_ids` / `style_ids`: explicit ids (int or list). Negative ids mean
+  groups: `-1` test group (1-10), `-2` train group (11-60), `-3` all. `style_ids`
+  may also be a dict to customize a single fixture's style.
+- `layout_and_style_ids`: explicit `(layout, style)` pairs, or `"5x5"` / `"5x1"`.
+
+When `split` is `null`, provide at least one of `layout_ids`+`style_ids` or
+`layout_and_style_ids`, otherwise RoboCasa falls back to sampling all 60x60
+combinations.
 
 Do not start the sim server with `ros2 run`. `ros2 run` uses the ROS 2 Python
 environment, so it will not see RoboCasa's Python 3.11 packages such as
 `gymnasium`.
-
-Then launch the ROS bridge in a ROS 2 shell:
-
-```bash
-source /opt/ros/humble/setup.bash
-source /home/ginger/Documents/workspace/CapX/NovaAgent/install/setup.bash
-ros2 launch nova_robocasa_bridge robocasa_bridge.launch.py
-```
 
 `robocasa_sim_server` sets `NUMBA_DISABLE_JIT=1` by default before importing
 RoboCasa. In the current editable RoboSuite/RoboCasa setup this avoids a numba

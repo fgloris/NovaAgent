@@ -1,0 +1,29 @@
+robocasa_bridge:
+  ros__parameters:
+    # robosuite 机器人名。RoboCasa gym wrapper 的动作/相机映射按 PandaOmron 硬编码,
+    # 换机器人需同时保证其控制器配置存在(controllers/config/robots/*.json)
+    robots: "PandaOmron"
+
+    # 使用 novel instructions(从 task_instruction_variants.csv 随机抽指令变体)。
+    # 注意:仅 composite 任务会实际使用;atomic 任务(如 PickPlace)指令为固定模板
+    use_novel_instructions: true
+
+    # ------------------ 随机方式 ------------------
+    # split: "target" | "pretrain" | "all" | null
+    #   target   固定 10 组 test 场景(layout 1-10 x style 1-10)
+    #   pretrain 随机 train 场景(不含岛台/墙架)
+    #   all      随机全部场景
+    #   null     不自动选取,改用下面的 layout/style 显式指定
+
+    # ------ 只有 split==null 时以下配置才会生效 ------
+    split: "target"
+    # layout 显式指定(需 split 为 null):
+    #   int 或 list,范围 1-60;-1 表示 test 组(1-10),-2 表示 train 组(11-60),-3 表示全部
+    #   传单个 int 即固定该 layout
+    layout_ids: []
+    # style 显式指定(需 split 为 null):
+    #   int 或 list,范围 1-60;-1 表示 test 组,-2 表示 train 组,-3 表示全部
+    #   也可传 dict 自定义单个 fixture 样式;传单个 int 即固定该 style
+    style_ids: []
+    # 显式 (layout, style) 组合列表,例如 [[14, 28], [15, 34]];或 "5x5" / "5x1" 快捷方式
+    layout_and_style_ids: []

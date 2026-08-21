@@ -78,6 +78,11 @@ class RoboCasaSession:
             "seed": int(request.get("seed", 0)),
             "camera_width": int(request.get("camera_width", 256)),
             "camera_height": int(request.get("camera_height", 256)),
+            "robots": request.get("robots", "PandaOmron"),
+            "layout_ids": request.get("layout_ids"),
+            "style_ids": request.get("style_ids"),
+            "layout_and_style_ids": request.get("layout_and_style_ids"),
+            "use_novel_instructions": bool(request.get("use_novel_instructions", False)),
         }
         if self.env is not None and self.env_config == config:
             return
@@ -94,6 +99,11 @@ class RoboCasaSession:
             seed=config["seed"],
             camera_widths=config["camera_width"],
             camera_heights=config["camera_height"],
+            robots=config["robots"],
+            layout_ids=config["layout_ids"],
+            style_ids=config["style_ids"],
+            layout_and_style_ids=config["layout_and_style_ids"],
+            use_novel_instructions=config["use_novel_instructions"],
             enable_render=True,
         )
         self.env_config = config

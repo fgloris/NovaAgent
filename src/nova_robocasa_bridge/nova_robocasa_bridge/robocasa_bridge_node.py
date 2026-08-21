@@ -147,6 +147,11 @@ class RoboCasaBridgeNode(Node):
         self.declare_parameter("server_host", "127.0.0.1")
         self.declare_parameter("server_port", 8766)
         self.declare_parameter("request_timeout_sec", 30.0)
+        self.declare_parameter("robots", "PandaOmron")
+        self.declare_parameter("layout_ids", [])
+        self.declare_parameter("style_ids", [])
+        self.declare_parameter("layout_and_style_ids", [])
+        self.declare_parameter("use_novel_instructions", True)
 
         self.env_id = str(self.get_parameter("env_id").value)
         self.split = str(self.get_parameter("split").value)
@@ -159,6 +164,11 @@ class RoboCasaBridgeNode(Node):
         self.server_host = str(self.get_parameter("server_host").value)
         self.server_port = int(self.get_parameter("server_port").value)
         self.request_timeout_sec = float(self.get_parameter("request_timeout_sec").value)
+        self.robots = str(self.get_parameter("robots").value)
+        self.layout_ids = self.get_parameter("layout_ids").value or None
+        self.style_ids = self.get_parameter("style_ids").value or None
+        self.layout_and_style_ids = self.get_parameter("layout_and_style_ids").value or None
+        self.use_novel_instructions = bool(self.get_parameter("use_novel_instructions").value)
 
         self.client = JsonLineClient(
             host=self.server_host,
@@ -205,6 +215,11 @@ class RoboCasaBridgeNode(Node):
                 "seed": self.seed,
                 "camera_width": self.camera_width,
                 "camera_height": self.camera_height,
+                "robots": self.robots,
+                "layout_ids": self.layout_ids,
+                "style_ids": self.style_ids,
+                "layout_and_style_ids": self.layout_and_style_ids,
+                "use_novel_instructions": self.use_novel_instructions,
             }
         )
         self.obs = decode_observation(response["obs"])
