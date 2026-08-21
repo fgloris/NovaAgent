@@ -1,0 +1,13 @@
+robocasa_bridge:
+  ros__parameters:
+    env_id: "robocasa/PickPlaceCounterToCabinet"
+    split: "target"
+    seed: 0
+    camera_width: 256
+    camera_height: 256
+    publish_rate_hz: 5.0
+    auto_reset: true
+    zero_action_on_start: true
+    server_host: "127.0.0.1"
+    server_port: 8766
+    request_timeout_sec: 30.0
