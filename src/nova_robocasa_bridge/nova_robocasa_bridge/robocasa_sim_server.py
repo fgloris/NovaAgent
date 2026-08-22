@@ -40,8 +40,51 @@ def action_to_numpy(action: dict[str, Any]) -> dict[str, np.ndarray]:
     }
 
 
+_RENDER_PRESETS: dict[str, dict[str, Any]] = {
+    "low": dict(
+        shadowsize=1024, offsamples=0, reflection=False, reflectionsamples=0,
+        specular=0.2, shininess=1.0, reflectance=0.0,
+    ),
+    "medium": dict(
+        shadowsize=2048, offsamples=2, reflection=True, reflectionsamples=128,
+        specular=0.35, shininess=1.0, reflectance=0.15,
+    ),
+    "high": dict(
+        shadowsize=4096, offsamples=4, reflection=True, reflectionsamples=128,
+        specular=0.5, shininess=1.0, reflectance=0.25,
+    ),
+    "ultra": dict(
+        shadowsize=8192, offsamples=8, reflection=True, reflectionsamples=256,
+        specular=0.6, shininess=1.0, reflectance=0.35,
+    ),
+}
+
+
+def _apply_render_quality(env: Any, quality: str) -> None:
+    """MuJoCo 离屏渲染增强:阴影分辨率/抗锯齿/环境反射/光照/材质光泽。"""
+    import mujoco
+
+    preset = _RENDER_PRESETS.get(quality, _RENDER_PRESETS["high"])
+    sim = env.env.sim
+    model = sim.model
+    model.vis.quality.shadowsize = preset["shadowsize"]
+    model.vis.quality.offsamples = preset["offsamples"]
+    model.vis.quality.reflectionsamples = preset["reflectionsamples"]
+    if model.nlight > 0:
+        model.light_ambient[:] = 0.55
+        model.light_diffuse[:] = 0.75
+    model.mat_specular[:] = preset["specular"]
+    model.mat_shininess[:] = preset["shininess"]
+    model.mat_reflectance[:] = preset["reflectance"]
+    context = getattr(sim, "_render_context_offscreen", None)
+    if context is not None:
+        context.vopt.flags[mujoco.mjtVisFlag.mjVIS_SHADOW] = 1
+        context.vopt.flags[mujoco.mjtVisFlag.mjVIS_REFLECT] = 1 if preset["reflection"] else 0
+
+
 class RoboCasaSession:
-    def __init__(self) -> None:
+    def __init__(self, scene_config: dict[str, Any] | None = None) -> None:
+        self.scene_config = scene_config or {}
         self.env = None
         self.env_config: dict[str, Any] | None = None
 
@@ -72,17 +115,19 @@ class RoboCasaSession:
             self.env_config = None
 
     def _ensure_env(self, request: dict[str, Any]) -> None:
+        scene = self.scene_config
         config = {
             "env_id": request["env_id"],
-            "split": request.get("split", "target"),
+            "split": scene.get("split", "target"),
             "seed": int(request.get("seed", 0)),
             "camera_width": int(request.get("camera_width", 256)),
             "camera_height": int(request.get("camera_height", 256)),
-            "robots": request.get("robots", "PandaOmron"),
-            "layout_ids": request.get("layout_ids"),
-            "style_ids": request.get("style_ids"),
-            "layout_and_style_ids": request.get("layout_and_style_ids"),
-            "use_novel_instructions": bool(request.get("use_novel_instructions", False)),
+            "robots": scene.get("robots", "PandaOmron"),
+            "layout_ids": scene.get("layout_ids"),
+            "style_ids": scene.get("style_ids"),
+            "layout_and_style_ids": scene.get("layout_and_style_ids"),
+            "use_novel_instructions": bool(scene.get("use_novel_instructions", False)),
+            "render_quality": scene.get("render_quality", "high"),
         }
         if self.env is not None and self.env_config == config:
             return
@@ -106,6 +151,7 @@ class RoboCasaSession:
             use_novel_instructions=config["use_novel_instructions"],
             enable_render=True,
         )
+        _apply_render_quality(self.env, config["render_quality"])
         self.env_config = config
 
 
@@ -147,14 +193,31 @@ class ThreadingTcpServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
+def _load_scene_config(path: str | None) -> dict[str, Any]:
+    """读取 scene.yaml,兼容 robocasa_bridge.ros__parameters 段或顶层 dict。"""
+    if not path:
+        return {}
+    import yaml
+
+    with open(path, "r", encoding="utf-8") as f:
+        document = yaml.safe_load(f) or {}
+    params = document.get("robocasa_bridge", {}).get("ros__parameters", {})
+    return params or (document if isinstance(document, dict) else {})
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--scene-config", default=None, help="path to scene.yaml")
     args = parser.parse_args()
+
+    scene_config = _load_scene_config(args.scene_config)
+    RoboCasaRequestHandler.session = RoboCasaSession(scene_config)
 
     with ThreadingTcpServer((args.host, args.port), RoboCasaRequestHandler) as server:
         print(f"RoboCasa sim server listening on {args.host}:{args.port}", flush=True)
+        print(f"scene config: {scene_config}", flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

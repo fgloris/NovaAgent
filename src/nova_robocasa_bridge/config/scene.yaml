@@ -19,11 +19,16 @@ robocasa_bridge:
     split: "target"
     # layout 显式指定(需 split 为 null):
     #   int 或 list,范围 1-60;-1 表示 test 组(1-10),-2 表示 train 组(11-60),-3 表示全部
-    #   传单个 int 即固定该 layout
-    layout_ids: []
+    #   传单个 int 即固定该 layout。留空则省略该项(不要写空数组,会被 rcl 转成 NOT_SET)
     # style 显式指定(需 split 为 null):
     #   int 或 list,范围 1-60;-1 表示 test 组,-2 表示 train 组,-3 表示全部
     #   也可传 dict 自定义单个 fixture 样式;传单个 int 即固定该 style
-    style_ids: []
     # 显式 (layout, style) 组合列表,例如 [[14, 28], [15, 34]];或 "5x5" / "5x1" 快捷方式
-    layout_and_style_ids: []
+
+    # ------------------ 渲染质量 ------------------
+    # 增强 MuJoCo 离屏渲染画质(阴影/反射/抗锯齿/光照/材质光泽)。可选:
+    #   low    保持接近默认,最省资源
+    #   medium 阴影 2048 + 2x 抗锯齿 + 开反射
+    #   high   阴影 4096 + 4x 抗锯齿 + 反射 128(默认)
+    #   ultra  阴影 8192 + 8x 抗锯齿 + 反射 256,画质最好但离屏渲染明显变慢
+    render_quality: "ultra"

@@ -9,12 +9,10 @@ from pathlib import Path
 
 def generate_launch_description():
     config = Path(get_package_share_directory("nova_robocasa_bridge")) / "config" / "bridge.yaml"
-    scene_config = Path(get_package_share_directory("nova_robocasa_bridge")) / "config" / "scene.yaml"
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("env_id", default_value="robocasa/PickPlaceCounterToCabinet"),
-            DeclareLaunchArgument("split", default_value="target"),
             DeclareLaunchArgument("server_host", default_value="127.0.0.1"),
             DeclareLaunchArgument("server_port", default_value="8766"),
             Node(
@@ -24,10 +22,8 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     str(config),
-                    str(scene_config),
                     {
                         "env_id": LaunchConfiguration("env_id"),
-                        "split": LaunchConfiguration("split"),
                         "server_host": LaunchConfiguration("server_host"),
                         "server_port": ParameterValue(
                             LaunchConfiguration("server_port"),

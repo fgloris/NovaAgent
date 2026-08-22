@@ -65,11 +65,18 @@ source install/setup.bash
 ros2 launch nova_robocasa_bridge robocasa_bridge.launch.py
 ```
 
-The launch file starts both the ROS bridge and the RoboCasa sim server (in the
-`robocasa` conda environment, default Python 3.11 at
-`/home/ginger/miniconda3/envs/robocasa/bin/python`). Set
-`with_sim_server:=false` to skip the sim server, or `sim_python:=<path>` to
-point at a different conda interpreter.
+The launch file starts only the ROS bridge. Start the RoboCasa sim server
+separately in the `robocasa` conda environment (Python 3.11), passing the
+scene config file:
+
+```bash
+/home/ginger/miniconda3/envs/robocasa/bin/python \
+  /home/ginger/Documents/workspace/CapX/NovaAgent/install/nova_robocasa_bridge/lib/python3.10/site-packages/nova_robocasa_bridge/robocasa_sim_server.py \
+  --host 127.0.0.1 --port 8766 \
+  --scene-config /home/ginger/Documents/workspace/CapX/NovaAgent/install/nova_robocasa_bridge/share/nova_robocasa_bridge/config/scene.yaml
+```
+
+Then launch the ROS bridge in another terminal.
 
 In another terminal, drive the robot manually or with random actions:
 
@@ -83,7 +90,8 @@ ros2 run nova_robocasa_bridge teleop_keyboard
 ## Scene configuration
 
 Robot and scene layout/style are configured in `config/scene.yaml`, which is
-loaded by the bridge and forwarded to the sim server on every reset:
+read **directly by the sim server** (`--scene-config`) — it is not a ROS
+parameter, so it is not forwarded through the bridge:
 
 - `robots`: robosuite robot name (default `PandaOmron`). The RoboCasa gym
   wrapper's action/camera mapping is hardcoded for PandaOmron, so switching
@@ -94,10 +102,14 @@ loaded by the bridge and forwarded to the sim server on every reset:
   groups: `-1` test group (1-10), `-2` train group (11-60), `-3` all. `style_ids`
   may also be a dict to customize a single fixture's style.
 - `layout_and_style_ids`: explicit `(layout, style)` pairs, or `"5x5"` / `"5x1"`.
+- `render_quality`: `low` / `medium` / `high` / `ultra`. Enhances the MuJoCo
+  offscreen renderer (shadow resolution, reflection, lighting, material gloss).
+  `ultra` looks best but renders noticeably slower.
 
 When `split` is `null`, provide at least one of `layout_ids`+`style_ids` or
 `layout_and_style_ids`, otherwise RoboCasa falls back to sampling all 60x60
-combinations.
+combinations. Do not write empty arrays (`[]`) for `layout_ids` etc.; omit the
+key entirely instead.
 
 Do not start the sim server with `ros2 run`. `ros2 run` uses the ROS 2 Python
 environment, so it will not see RoboCasa's Python 3.11 packages such as
