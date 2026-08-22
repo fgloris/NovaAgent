@@ -5,8 +5,9 @@ robocasa_bridge:
     robots: "PandaOmron"
 
     # 使用 novel instructions(从 task_instruction_variants.csv 随机抽指令变体)。
-    # 注意:仅 composite 任务会实际使用;atomic 任务(如 PickPlace)指令为固定模板
-    use_novel_instructions: true
+    # 注意:仅 composite 任务可用(csv 里需存在该任务的变体条目);
+    # atomic 任务(如 PickPlaceCounterToCabinet)开启会直接报错,请设为 false
+    use_novel_instructions: false
 
     # ------------------ 随机方式 ------------------
     # split: "target" | "pretrain" | "all" | null
@@ -26,9 +27,10 @@ robocasa_bridge:
     # 显式 (layout, style) 组合列表,例如 [[14, 28], [15, 34]];或 "5x5" / "5x1" 快捷方式
 
     # ------------------ 渲染质量 ------------------
-    # 增强 MuJoCo 离屏渲染画质(阴影/反射/抗锯齿/光照/材质光泽)。可选:
+    # 增强 MuJoCo 离屏渲染画质(阴影/抗锯齿/光照/材质光泽)。可选:
     #   low    保持接近默认,最省资源
-    #   medium 阴影 2048 + 2x 抗锯齿 + 开反射
-    #   high   阴影 4096 + 4x 抗锯齿 + 反射 128(默认)
-    #   ultra  阴影 8192 + 8x 抗锯齿 + 反射 256,画质最好但离屏渲染明显变慢
-    render_quality: "ultra"
+    #   medium 阴影 2048 + 2x 抗锯齿
+    #   high   阴影 4096 + 4x 抗锯齿(默认)
+    #   ultra  阴影 8192 + 8x 抗锯齿,画质最好但离屏渲染明显变慢
+    # 注:MuJoCo 3.x 已移除环境反射(reflection),此处只调节阴影/抗锯齿/光照/高光
+    render_quality: "low"

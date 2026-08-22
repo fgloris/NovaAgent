@@ -7,6 +7,7 @@ import json
 import os
 import socketserver
 import traceback
+from pathlib import Path
 from typing import Any
 
 os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
@@ -42,44 +43,59 @@ def action_to_numpy(action: dict[str, Any]) -> dict[str, np.ndarray]:
 
 _RENDER_PRESETS: dict[str, dict[str, Any]] = {
     "low": dict(
-        shadowsize=1024, offsamples=0, reflection=False, reflectionsamples=0,
-        specular=0.2, shininess=1.0, reflectance=0.0,
+        shadowsize=1024, offsamples=0,
+        ambient=0.4, diffuse=0.6, specular=0.2, shininess=1.0,
     ),
     "medium": dict(
-        shadowsize=2048, offsamples=2, reflection=True, reflectionsamples=128,
-        specular=0.35, shininess=1.0, reflectance=0.15,
+        shadowsize=2048, offsamples=2,
+        ambient=0.35, diffuse=0.8, specular=0.4, shininess=1.2,
     ),
     "high": dict(
-        shadowsize=4096, offsamples=4, reflection=True, reflectionsamples=128,
-        specular=0.5, shininess=1.0, reflectance=0.25,
+        shadowsize=4096, offsamples=4,
+        ambient=0.3, diffuse=0.95, specular=0.55, shininess=1.4,
     ),
     "ultra": dict(
-        shadowsize=8192, offsamples=8, reflection=True, reflectionsamples=256,
-        specular=0.6, shininess=1.0, reflectance=0.35,
+        shadowsize=8192, offsamples=8,
+        ambient=0.25, diffuse=1.0, specular=0.7, shininess=1.6,
     ),
 }
 
 
-def _apply_render_quality(env: Any, quality: str) -> None:
-    """MuJoCo 离屏渲染增强:阴影分辨率/抗锯齿/环境反射/光照/材质光泽。"""
-    import mujoco
+def _set_quality_field(model: Any, attr: str, value: int) -> None:
+    if hasattr(model.vis.quality, attr):
+        setattr(model.vis.quality, attr, value)
 
+
+def _apply_render_quality(env: Any, quality: str) -> None:
+    """MuJoCo 离屏渲染增强:阴影分辨率/抗锯齿/光照对比/材质高光。"""
     preset = _RENDER_PRESETS.get(quality, _RENDER_PRESETS["high"])
     sim = env.env.sim
     model = sim.model
-    model.vis.quality.shadowsize = preset["shadowsize"]
-    model.vis.quality.offsamples = preset["offsamples"]
-    model.vis.quality.reflectionsamples = preset["reflectionsamples"]
+    _set_quality_field(model, "shadowsize", preset["shadowsize"])
+    _set_quality_field(model, "offsamples", preset["offsamples"])
     if model.nlight > 0:
-        model.light_ambient[:] = 0.55
-        model.light_diffuse[:] = 0.75
-    model.mat_specular[:] = preset["specular"]
-    model.mat_shininess[:] = preset["shininess"]
-    model.mat_reflectance[:] = preset["reflectance"]
-    context = getattr(sim, "_render_context_offscreen", None)
-    if context is not None:
-        context.vopt.flags[mujoco.mjtVisFlag.mjVIS_SHADOW] = 1
-        context.vopt.flags[mujoco.mjtVisFlag.mjVIS_REFLECT] = 1 if preset["reflection"] else 0
+        model.light_ambient[:] = preset["ambient"]
+        model.light_diffuse[:] = preset["diffuse"]
+        if hasattr(model, "light_castshadow"):
+            model.light_castshadow[:] = 1
+    if hasattr(model, "mat_specular"):
+        model.mat_specular[:] = preset["specular"]
+    if hasattr(model, "mat_shininess"):
+        model.mat_shininess[:] = preset["shininess"]
+    print(
+        "[render] quality={} shadowsize={} offsamples={} nlight={} "
+        "ambient={:.2f} diffuse={:.2f} specular={:.2f} shininess={:.2f}".format(
+            quality,
+            model.vis.quality.shadowsize,
+            model.vis.quality.offsamples,
+            model.nlight,
+            float(model.light_ambient[0, 0]) if model.nlight else 0.0,
+            float(model.light_diffuse[0, 0]) if model.nlight else 0.0,
+            float(model.mat_specular[0]) if model.nmat else 0.0,
+            float(model.mat_shininess[0]) if model.nmat else 0.0,
+        ),
+        flush=True,
+    )
 
 
 class RoboCasaSession:
@@ -205,19 +221,43 @@ def _load_scene_config(path: str | None) -> dict[str, Any]:
     return params or (document if isinstance(document, dict) else {})
 
 
+def _default_scene_config() -> str | None:
+    """按相对位置定位 project 里的 config/scene.yaml,无 --scene-config 时兜底。"""
+    here = Path(__file__).resolve()
+    candidates = [here.parent.parent / "config" / "scene.yaml"]
+    for parent in here.parents:
+        if parent.name == "site-packages":
+            candidates.append(
+                parent.parent.parent / "share" / "nova_robocasa_bridge" / "config" / "scene.yaml"
+            )
+            break
+    env_path = os.environ.get("NOVA_SCENE_CONFIG")
+    if env_path:
+        candidates.insert(0, Path(env_path))
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8766)
-    parser.add_argument("--scene-config", default=None, help="path to scene.yaml")
+    parser.add_argument(
+        "--scene-config",
+        default=None,
+        help="path to scene.yaml; defaults to the project's config/scene.yaml",
+    )
     args = parser.parse_args()
 
-    scene_config = _load_scene_config(args.scene_config)
+    scene_path = args.scene_config or _default_scene_config()
+    scene_config = _load_scene_config(scene_path)
     RoboCasaRequestHandler.session = RoboCasaSession(scene_config)
 
     with ThreadingTcpServer((args.host, args.port), RoboCasaRequestHandler) as server:
         print(f"RoboCasa sim server listening on {args.host}:{args.port}", flush=True)
-        print(f"scene config: {scene_config}", flush=True)
+        print(f"scene config: {scene_path or '(none)'}", flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

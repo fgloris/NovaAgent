@@ -66,14 +66,15 @@ ros2 launch nova_robocasa_bridge robocasa_bridge.launch.py
 ```
 
 The launch file starts only the ROS bridge. Start the RoboCasa sim server
-separately in the `robocasa` conda environment (Python 3.11), passing the
-scene config file:
+separately in the `robocasa` conda environment (Python 3.11). It locates the
+project's `config/scene.yaml` automatically by relative path, so no
+`--scene-config` is needed (override with `--scene-config <path>` or the
+`NOVA_SCENE_CONFIG` env var):
 
 ```bash
 /home/ginger/miniconda3/envs/robocasa/bin/python \
   /home/ginger/Documents/workspace/CapX/NovaAgent/install/nova_robocasa_bridge/lib/python3.10/site-packages/nova_robocasa_bridge/robocasa_sim_server.py \
-  --host 127.0.0.1 --port 8766 \
-  --scene-config /home/ginger/Documents/workspace/CapX/NovaAgent/install/nova_robocasa_bridge/share/nova_robocasa_bridge/config/scene.yaml
+  --host 127.0.0.1 --port 8766
 ```
 
 Then launch the ROS bridge in another terminal.
