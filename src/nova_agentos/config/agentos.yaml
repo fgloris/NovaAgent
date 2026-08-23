@@ -1,0 +1,6 @@
+nova_agentos:
+  ros__parameters:
+    llm_config_path: ""
+    max_replan: 2
+    decision_timeout_sec: 30.0
+    auto_start_on_instruction: false

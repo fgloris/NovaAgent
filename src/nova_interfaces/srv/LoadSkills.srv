@@ -1,0 +1,5 @@
+string[] names
+---
+bool success
+string content
+string message

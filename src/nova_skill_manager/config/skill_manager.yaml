@@ -1,0 +1,3 @@
+nova_skill_manager:
+  ros__parameters:
+    workspace_skills_dir: "~/.novaagent/skills"

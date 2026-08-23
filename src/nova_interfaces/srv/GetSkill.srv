@@ -1,0 +1,5 @@
+string name
+---
+bool found
+string content
+SkillInfo info
