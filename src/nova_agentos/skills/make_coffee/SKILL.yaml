@@ -1,0 +1,11 @@
+# skill 元数据:name 必须唯一,description 会进入 skill 索引供 LLM 选择
+name: make_coffee
+description: 制作一杯手冲/速溶咖啡的完整流程经验,含器具准备、冲煮顺序、安全与整洁注意事项
+tags:
+  - kitchen
+  - coffee
+  - daily
+requires_tools:
+  - grasp
+  - place
+  - wait

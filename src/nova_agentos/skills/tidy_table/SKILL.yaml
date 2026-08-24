@@ -1,0 +1,9 @@
+# skill 元数据
+name: tidy_table
+description: 收拾桌面的流程经验,含物品归位顺序、抓放注意点与整洁要求
+tags:
+  - household
+  - cleanup
+requires_tools:
+  - grasp
+  - place

@@ -2,3 +2,5 @@ __pycache__
 build/
 install/
 log/
+robocasa365_checkpoints/
+embodied_agentic_systems.md

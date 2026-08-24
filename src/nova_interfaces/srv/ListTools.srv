@@ -1,0 +1,4 @@
+# 查询 executor_manager 当前全部可用工具
+uint8 structure_needs_at_least_one_member
+---
+ToolDescriptor[] tools
