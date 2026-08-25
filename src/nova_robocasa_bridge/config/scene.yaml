@@ -16,8 +16,8 @@ robocasa_bridge:
     #   all      随机全部场景
     #   null     不自动选取,改用下面的 layout/style 显式指定
 
-    # ------ 只有 split==null 时以下配置才会生效 ------
     split: "target"
+    # ------ 只有 split==null 时以下配置才会生效 ------
     # layout 显式指定(需 split 为 null):
     #   int 或 list,范围 1-60;-1 表示 test 组(1-10),-2 表示 train 组(11-60),-3 表示全部
     #   传单个 int 即固定该 layout。留空则省略该项(不要写空数组,会被 rcl 转成 NOT_SET)

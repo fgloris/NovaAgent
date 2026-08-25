@@ -1,0 +1,22 @@
+libero_bridge:
+  ros__parameters:
+    # robosuite 机器人名,LIBERO benchmark 默认单臂 Panda
+    robots: ["Panda"]
+
+    # OSC_POSE / OSC_POSITION / IK_POSE 等,7 维动作(OSC_POSE 为 dx dy dz droll dpitch dyaw gripper)
+    controller: "OSC_POSE"
+
+    # 渲染后端
+    renderer: "mujoco"
+
+    # 相机名列表,会自动为每个相机创建 /nova/libero/cameras/<name>/image_raw topic
+    camera_names: ["agentview", "robot0_eye_in_hand"]
+
+    # ------------------ 初始化方式 ------------------
+    # init_mode:
+    #   random  每次 reset 用 env.reset() 从 bddl 的 (:ranges ...) 区域随机采样初始位姿(默认)
+    #   fixed   每次 reset 加载 benchmark 固定的 pruned init states,保证可复现
+    # init_state_index:
+    #   init_mode 为 fixed 时,从 init states 列表中选取的索引(默认 0)
+    init_mode: "random"
+    init_state_index: 0
