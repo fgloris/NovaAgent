@@ -9,7 +9,7 @@ libero_bridge:
     # 渲染后端
     renderer: "mujoco"
 
-    # 相机名列表,会自动为每个相机创建 /nova/libero/cameras/<name>/image_raw topic
+    # 相机名列表,会自动为每个相机创建 /nova/env/camera/<name>/image_raw topic
     camera_names: ["agentview", "robot0_eye_in_hand"]
 
     # ------------------ 初始化方式 ------------------

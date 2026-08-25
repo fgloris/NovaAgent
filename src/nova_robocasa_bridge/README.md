@@ -32,21 +32,25 @@ TCP 协议为按行分隔的 JSON。观测中的 numpy 数组以 base64 编码�
 
 ## Topics
 
-- `/nova/robocasa/action_cmd`（`std_msgs/Float32MultiArray`）
-  - 最多 12 个归一化值，范围 `[-1, 1]`；缺失值以 0 填充：
-    `[eef_dx, eef_dy, eef_dz, eef_rx, eef_ry, eef_rz, gripper_close, base_x, base_y, base_yaw, torso, control_mode]`
-  - `gripper_close` 和 `control_mode` 以 `0.5` 为阈值，因为 RoboCasa 包装器将它们映射为二进制的控制器指令。
-- `/nova/robocasa/state`（`std_msgs/String`）
-  - JSON 载荷，包含 `instruction`、标量的 rollout 状态以及精简后的 `state.*` 观测。大型数组以 shape/dtype/min/max 概括。
-- `/nova/robocasa/reward`（`std_msgs/Float32`）
-- `/nova/robocasa/success`（`std_msgs/Bool`）
-- `/nova/robocasa/cameras/<name>/image_raw`（`sensor_msgs/Image`）
-  - 为每一个 `video.*` RGB 观测键动态创建。
+统一规范话题 `/nova/env/*`(与 LIBERO 一致,只维度不同;动作/观测规格通过自发现获取):
+
+- `/nova/env/action_cmd`（`std_msgs/Float32MultiArray`）
+  - 长度 = `action_spec.dim`(默认 12,`[-1, 1]` 归一化向量;缺失值以 0 填充):
+    `[pos3, rot3, gripper, base4, control_mode]`
+  - 动作转换在 sim server 端完成(规范向量 → RoboCasa action dict)。
+- `/nova/env/obs`（`std_msgs/String`）
+  - 自描述 JSON：含 `sim/robots/controller`、`instruction`、`action_spec`、精简后的 `state` 与 `cameras`。大型数组以 shape/dtype/min/max 概括。
+- `/nova/env/reward`（`std_msgs/Float32`）
+- `/nova/env/success`（`std_msgs/Bool`）
+- `/nova/env/camera/<name>/image_raw`（`sensor_msgs/Image`）
+  - 为每一个 `video.*` RGB 观测键动态创建(键名统一剥掉 `_image` 后缀)。
 
 ## Services
 
-- `/nova/robocasa/reset`（`std_srvs/Trigger`）
-- `/nova/robocasa/step_zero`（`std_srvs/Trigger`）
+- `/nova/env/info`（`nova_interfaces/srv/EnvInfo`）
+  - 自发现：返回 `action_spec`（维度+含义）与 `obs_spec`（相机/state 键），供 AgentOS 规划转发。
+- `/nova/env/reset`（`std_srvs/Trigger`）
+- `/nova/env/step_zero`（`std_srvs/Trigger`）
 
 ## 运行
 
@@ -96,6 +100,6 @@ ros2 run nova_robocasa_bridge random_action_client
 ## Agent 架构
 
 将该桥接器用作底层仿真边界：
-- LLM 规划器：读取 `/nova/robocasa/state`，尤其是 `instruction`，并选择下一个高层技能。
-- 技能后端 / VLA 策略：消费相机 topic 和 state JSON，并发布 `/nova/robocasa/action_cmd`。
-- 桥接器：以 `publish_rate_hz` 步进 RoboCasa/MuJoCo，发布 reward/success，并对 NovaAgent 其余部分隐藏 RoboCasa 特有的 action dict 细节。
+- LLM 规划器：读取 `/nova/env/obs`，尤其是 `instruction`，并选择下一个高层技能。
+- VLA 类 executor：由 AgentOS 注入专属命名空间 `/nova/session/{task_id}/{nid}/*`，消费其中的相机 topic 和 state JSON，并把动作发布到 `<ns>/action_cmd`（由 topic_router 回灌 `/nova/env/action_cmd`）。
+- 桥接器：以 `publish_rate_hz` 步进 RoboCasa/MuJoCo，发布 reward/success，并对 NovaAgent 其余部分隐藏 RoboCasa 特有的动作维度（默认 12 维）细节。

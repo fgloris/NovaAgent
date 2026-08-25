@@ -1,0 +1,8 @@
+# 请求 topic_router 建立一组话题转发映射
+string mapping_id
+string[] src_topics
+string[] dst_topics
+string[] msg_types      # 与 src/dst 一一对应:image|string|float32multi|float32|bool
+---
+bool success
+string message

@@ -2,12 +2,8 @@
 from __future__ import annotations
 
 import argparse
-import base64
-import json
 import os
-import socketserver
 import sys
-import traceback
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +11,28 @@ os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
 os.environ.setdefault("NUMBA_CACHE_DIR", "/tmp/numba_cache")
 
 import numpy as np
+
+
+# 直接 python 运行时(未 source install/setup.bash)也能找到 nova_common 包
+def _ensure_nova_common_importable() -> None:
+    here = Path(__file__).resolve()
+    candidates = []
+    src_parent = here.parents[2]
+    if (src_parent / "nova_common" / "nova_common" / "__init__.py").is_file():
+        candidates.append(str(src_parent / "nova_common"))
+    for parent in here.parents:
+        if parent.name == "site-packages":
+            candidates.append(str(parent))
+            break
+    for candidate in candidates:
+        if candidate not in sys.path:
+            sys.path.insert(0, candidate)
+
+
+_ensure_nova_common_importable()
+
+from nova_common.jsonline import serve
+from nova_common.obs_codec import build_obs_spec, encode_value, normalize_obs
 
 
 # LIBERO 源码以 namespace 包形式安装(libero/libero),需要把 LIBERO 根目录加入 sys.path。
@@ -45,33 +63,25 @@ def _ensure_libero_importable() -> None:
 _ensure_libero_importable()
 
 
-def encode_value(value: Any) -> Any:
-    if isinstance(value, np.ndarray):
-        array = np.ascontiguousarray(value)
-        return {
-            "__ndarray__": True,
-            "dtype": str(array.dtype),
-            "shape": list(array.shape),
-            "data": base64.b64encode(array.tobytes()).decode("ascii"),
-        }
-    if isinstance(value, np.generic):
-        return value.item()
-    if isinstance(value, dict):
-        return {str(k): encode_value(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [encode_value(v) for v in value]
-    return value
+# 基于 controller 生成动作布局约定(维度优先从 env.action_space 自省)
+_CONTROLLER_ACTION_MEANING = {
+    "OSC_POSE": ["dx", "dy", "dz", "droll", "dpitch", "dyaw", "gripper"],
+    "IK_POSE": ["dx", "dy", "dz", "droll", "dpitch", "dyaw", "gripper"],
+    "OSC_POSITION": ["dx", "dy", "dz", "gripper"],
+}
 
 
-# 把 LIBERO 的观测键统一成 robocasa 的命名风格:图像加 video. 前缀,其余加 state.
-def normalize_obs(obs: dict[str, Any]) -> dict[str, Any]:
-    normalized: dict[str, Any] = {}
-    for key, value in obs.items():
-        if isinstance(value, np.ndarray) and value.ndim == 3 and value.shape[-1] == 3:
-            normalized[f"video.{key}"] = value
+def _build_action_spec(controller: str, dim_override: int | None) -> dict[str, Any]:
+    meaning = list(_CONTROLLER_ACTION_MEANING.get(controller, []))
+    dim = dim_override if dim_override is not None else (len(meaning) or 7)
+    if not meaning:
+        meaning = [f"dim{i}" for i in range(dim)]
+    elif len(meaning) != dim:
+        if len(meaning) > dim:
+            meaning = meaning[:dim]
         else:
-            normalized[f"state.{key}"] = value
-    return normalized
+            meaning = meaning + [f"dim{i}" for i in range(len(meaning), dim)]
+    return {"dim": dim, "meaning": meaning}
 
 
 class LiberoSession:
@@ -113,7 +123,14 @@ class LiberoSession:
         info["success"] = success
         obs = normalize_obs(obs)
         obs["state.instruction"] = self.language_instruction
-        return {"ok": True, "obs": encode_value(obs), "info": encode_value(info)}
+        return {
+            "ok": True,
+            "obs": encode_value(obs),
+            "info": encode_value(info),
+            "action_spec": self._action_spec(),
+            "obs_spec": build_obs_spec(obs),
+            "sim_info": self._sim_info(),
+        }
 
     def step(self, request: dict[str, Any]) -> dict[str, Any]:
         if self.env is None:
@@ -133,6 +150,9 @@ class LiberoSession:
             "terminated": bool(done),
             "truncated": False,
             "info": encode_value(info),
+            "action_spec": self._action_spec(),
+            "obs_spec": build_obs_spec(obs),
+            "sim_info": self._sim_info(),
         }
 
     def close(self) -> None:
@@ -197,43 +217,25 @@ class LiberoSession:
             flush=True,
         )
 
-
-class LiberoRequestHandler(socketserver.StreamRequestHandler):
-    session = LiberoSession()
-
-    def handle(self) -> None:
-        while True:
-            line = self.rfile.readline()
-            if not line:
-                return
+    def _action_spec(self) -> dict[str, Any]:
+        dim = None
+        if self.env is not None:
             try:
-                request = json.loads(line.decode("utf-8"))
-                response = self.dispatch(request)
-            except Exception as exc:
-                response = {
-                    "ok": False,
-                    "error": str(exc),
-                    "traceback": traceback.format_exc(),
-                }
-            self.wfile.write(json.dumps(response, separators=(",", ":")).encode("utf-8"))
-            self.wfile.write(b"\n")
-            self.wfile.flush()
+                dim = int(self.env.action_space.shape[0])
+            except Exception:
+                dim = None
+        controller = (self.env_config or {}).get("controller", "OSC_POSE")
+        return _build_action_spec(controller, dim)
 
-    def dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
-        request_type = request.get("type")
-        if request_type == "reset":
-            return self.session.reset(request)
-        if request_type == "step":
-            return self.session.step(request)
-        if request_type == "close":
-            self.session.close()
-            return {"ok": True}
-        raise ValueError(f"unknown request type: {request_type!r}")
-
-
-class ThreadingTcpServer(socketserver.ThreadingTCPServer):
-    allow_reuse_address = True
-    daemon_threads = True
+    def _sim_info(self) -> dict[str, Any]:
+        config = self.env_config or {}
+        return {
+            "sim": "libero",
+            "robots": config.get("robots", ["Panda"]),
+            "controller": config.get("controller", "OSC_POSE"),
+            "benchmark": config.get("benchmark", ""),
+            "task_id": config.get("task_id", 0),
+        }
 
 
 def _load_scene_config(path: str | None) -> dict[str, Any]:
@@ -278,18 +280,8 @@ def main() -> int:
 
     scene_path = args.scene_config or _default_scene_config()
     scene_config = _load_scene_config(scene_path)
-    LiberoRequestHandler.session = LiberoSession(scene_config)
-
-    with ThreadingTcpServer((args.host, args.port), LiberoRequestHandler) as server:
-        print(f"LIBERO sim server listening on {args.host}:{args.port}", flush=True)
-        print(f"scene config: {scene_path or '(none)'}", flush=True)
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            LiberoRequestHandler.session.close()
-    return 0
+    print(f"scene config: {scene_path or '(none)'}", flush=True)
+    return serve(args.host, args.port, LiberoSession(scene_config), "LIBERO")
 
 
 if __name__ == "__main__":

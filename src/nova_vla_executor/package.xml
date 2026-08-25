@@ -1,19 +1,17 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>nova_robocasa_bridge</name>
+  <name>nova_vla_executor</name>
   <version>0.1.0</version>
-  <description>ROS 2 bridge for controlling RoboCasa simulation environments.</description>
+  <description>NovaAgent VLA executor:本地 ROS2 bridge,连接远程 pi0 推理服务(仅推理,不部署 ROS2)。</description>
   <maintainer email="ginger@example.com">ginger</maintainer>
   <license>MIT</license>
 
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>nova_interfaces</exec_depend>
   <exec_depend>std_msgs</exec_depend>
-  <exec_depend>std_srvs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>builtin_interfaces</exec_depend>
-  <exec_depend>nova_common</exec_depend>
+  <exec_depend>python3-requests</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

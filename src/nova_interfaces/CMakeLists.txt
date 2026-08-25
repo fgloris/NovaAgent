@@ -24,6 +24,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TaskState.msg"
   "srv/ListTools.srv"
   "srv/RunTask.srv"
+  "srv/EnvInfo.srv"
+  "srv/MapTopics.srv"
+  "srv/UnmapTopics.srv"
   "action/MCPExecute.action"
   DEPENDENCIES builtin_interfaces action_msgs
 )

@@ -1,0 +1,6 @@
+# 查询仿真环境完整规格(自发现核心:动作维度/相机列表/观测键)
+uint8 structure_needs_at_least_one_member
+---
+bool success
+string message
+string spec_json   # JSON:{"sim","robots","controller","action_spec","obs_spec","instruction"}

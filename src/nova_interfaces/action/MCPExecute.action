@@ -1,5 +1,4 @@
 # 统一的 MCP 工具执行动作:所有 executor 都实现此 action,manager 负责路由转发
----
 # goal
 string tool_name     # 要调用的工具名
 string params_json   # 工具参数(JSON 字符串)

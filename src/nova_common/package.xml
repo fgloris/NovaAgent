@@ -3,12 +3,16 @@
 <package format="3">
   <name>nova_common</name>
   <version>0.1.0</version>
-  <description>NovaAgent 共享 LLM 配置与统一客户端(节点无关)。</description>
+  <description>NovaAgent 共享库:LLM 客户端、观测编解码(obs_codec)、行式 JSON 协议(jsonline)、统一仿真桥基类(env_bridge)。</description>
   <maintainer email="ginger@example.com">ginger</maintainer>
   <license>MIT</license>
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>nova_interfaces</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

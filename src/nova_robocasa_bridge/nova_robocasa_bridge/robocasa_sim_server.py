@@ -2,11 +2,8 @@
 from __future__ import annotations
 
 import argparse
-import base64
-import json
 import os
-import socketserver
-import traceback
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -16,28 +13,55 @@ os.environ.setdefault("NUMBA_CACHE_DIR", "/tmp/numba_cache")
 import numpy as np
 
 
-def encode_value(value: Any) -> Any:
-    if isinstance(value, np.ndarray):
-        array = np.ascontiguousarray(value)
-        return {
-            "__ndarray__": True,
-            "dtype": str(array.dtype),
-            "shape": list(array.shape),
-            "data": base64.b64encode(array.tobytes()).decode("ascii"),
-        }
-    if isinstance(value, np.generic):
-        return value.item()
-    if isinstance(value, dict):
-        return {str(k): encode_value(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [encode_value(v) for v in value]
-    return value
+# 直接 python 运行时(未 source install/setup.bash)也能找到 nova_common 包
+def _ensure_nova_common_importable() -> None:
+    here = Path(__file__).resolve()
+    candidates = []
+    src_parent = here.parents[2]
+    if (src_parent / "nova_common" / "nova_common" / "__init__.py").is_file():
+        candidates.append(str(src_parent / "nova_common"))
+    for parent in here.parents:
+        if parent.name == "site-packages":
+            candidates.append(str(parent))
+            break
+    for candidate in candidates:
+        if candidate not in sys.path:
+            sys.path.insert(0, candidate)
 
 
-def action_to_numpy(action: dict[str, Any]) -> dict[str, np.ndarray]:
+_ensure_nova_common_importable()
+
+from nova_common.jsonline import serve
+from nova_common.obs_codec import build_obs_spec, encode_value, normalize_obs
+
+
+# 规范动作向量 -> RoboCasa 动作 dict(缺省补零并截断到 [-1,1])
+# 布局约定: [pos3, rot3, gripper, base4, control_mode]
+_ROBOCASA_ACTION_MEANING = [
+    "pos_x", "pos_y", "pos_z",
+    "rot_x", "rot_y", "rot_z",
+    "gripper",
+    "base_vx", "base_vy", "base_wz", "base_rz",
+    "control_mode",
+]
+
+
+def action_vector_to_dict(values: np.ndarray) -> dict[str, list[float]]:
+    values = np.ravel(values).astype(np.float32)
+    if values.size > len(_ROBOCASA_ACTION_MEANING):
+        raise ValueError(
+            f"expected at most {len(_ROBOCASA_ACTION_MEANING)} action values, got {values.size}"
+        )
+    if values.size < len(_ROBOCASA_ACTION_MEANING):
+        values = np.pad(values, (0, len(_ROBOCASA_ACTION_MEANING) - values.size))
+    values = np.clip(values, -1.0, 1.0)
+
     return {
-        key: np.asarray(value, dtype=np.float32)
-        for key, value in action.items()
+        "action.end_effector_position": values[0:3].tolist(),
+        "action.end_effector_rotation": values[3:6].tolist(),
+        "action.gripper_close": [1.0 if values[6] >= 0.5 else 0.0],
+        "action.base_motion": values[7:11].tolist(),
+        "action.control_mode": [1.0 if values[11] >= 0.5 else 0.0],
     }
 
 
@@ -108,13 +132,22 @@ class RoboCasaSession:
         self._ensure_env(request)
         assert self.env is not None
         obs, info = self.env.reset(seed=int(request.get("seed", 0)))
-        return {"ok": True, "obs": encode_value(obs), "info": encode_value(info)}
+        obs = self._prepare_obs(obs, info)
+        return {
+            "ok": True,
+            "obs": encode_value(obs),
+            "info": encode_value(info),
+            "action_spec": self._action_spec(),
+            "obs_spec": build_obs_spec(obs),
+            "sim_info": self._sim_info(),
+        }
 
     def step(self, request: dict[str, Any]) -> dict[str, Any]:
         if self.env is None:
             raise RuntimeError("environment is not initialized; call reset first")
-        action = action_to_numpy(request["action"])
+        action = action_vector_to_dict(np.asarray(request["action"], dtype=np.float32))
         obs, reward, terminated, truncated, info = self.env.step(action)
+        obs = self._prepare_obs(obs, info)
         return {
             "ok": True,
             "obs": encode_value(obs),
@@ -122,6 +155,9 @@ class RoboCasaSession:
             "terminated": bool(terminated),
             "truncated": bool(truncated),
             "info": encode_value(info),
+            "action_spec": self._action_spec(),
+            "obs_spec": build_obs_spec(obs),
+            "sim_info": self._sim_info(),
         }
 
     def close(self) -> None:
@@ -129,6 +165,15 @@ class RoboCasaSession:
             self.env.close()
             self.env = None
             self.env_config = None
+
+    # 归一化键名(修掉相机/state 前缀不匹配)+ 指令统一写入 state.instruction
+    def _prepare_obs(self, obs: dict[str, Any], info: dict[str, Any]) -> dict[str, Any]:
+        obs = normalize_obs(obs)
+        instr = obs.get("state.annotation.human.task_description", "")
+        if not instr:
+            instr = info.get("task_description", "")
+        obs["state.instruction"] = instr
+        return obs
 
     def _ensure_env(self, request: dict[str, Any]) -> None:
         scene = self.scene_config
@@ -170,43 +215,30 @@ class RoboCasaSession:
         _apply_render_quality(self.env, config["render_quality"])
         self.env_config = config
 
-
-class RoboCasaRequestHandler(socketserver.StreamRequestHandler):
-    session = RoboCasaSession()
-
-    def handle(self) -> None:
-        while True:
-            line = self.rfile.readline()
-            if not line:
-                return
+    def _action_spec(self) -> dict[str, Any]:
+        dim = None
+        if self.env is not None:
             try:
-                request = json.loads(line.decode("utf-8"))
-                response = self.dispatch(request)
-            except Exception as exc:
-                response = {
-                    "ok": False,
-                    "error": str(exc),
-                    "traceback": traceback.format_exc(),
-                }
-            self.wfile.write(json.dumps(response, separators=(",", ":")).encode("utf-8"))
-            self.wfile.write(b"\n")
-            self.wfile.flush()
+                dim = int(self.env.action_space.shape[0])
+            except Exception:
+                dim = None
+        dim = dim if dim is not None else len(_ROBOCASA_ACTION_MEANING)
+        if dim <= len(_ROBOCASA_ACTION_MEANING):
+            meaning = _ROBOCASA_ACTION_MEANING[:dim]
+        else:
+            meaning = _ROBOCASA_ACTION_MEANING + [
+                f"dim{i}" for i in range(len(_ROBOCASA_ACTION_MEANING), dim)
+            ]
+        return {"dim": dim, "meaning": meaning}
 
-    def dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
-        request_type = request.get("type")
-        if request_type == "reset":
-            return self.session.reset(request)
-        if request_type == "step":
-            return self.session.step(request)
-        if request_type == "close":
-            self.session.close()
-            return {"ok": True}
-        raise ValueError(f"unknown request type: {request_type!r}")
-
-
-class ThreadingTcpServer(socketserver.ThreadingTCPServer):
-    allow_reuse_address = True
-    daemon_threads = True
+    def _sim_info(self) -> dict[str, Any]:
+        config = self.env_config or {}
+        return {
+            "sim": "robocasa",
+            "robots": config.get("robots", "PandaOmron"),
+            "controller": "",
+            "env_id": config.get("env_id", ""),
+        }
 
 
 def _load_scene_config(path: str | None) -> dict[str, Any]:
@@ -253,18 +285,8 @@ def main() -> int:
 
     scene_path = args.scene_config or _default_scene_config()
     scene_config = _load_scene_config(scene_path)
-    RoboCasaRequestHandler.session = RoboCasaSession(scene_config)
-
-    with ThreadingTcpServer((args.host, args.port), RoboCasaRequestHandler) as server:
-        print(f"RoboCasa sim server listening on {args.host}:{args.port}", flush=True)
-        print(f"scene config: {scene_path or '(none)'}", flush=True)
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            RoboCasaRequestHandler.session.close()
-    return 0
+    print(f"scene config: {scene_path or '(none)'}", flush=True)
+    return serve(args.host, args.port, RoboCasaSession(scene_config), "RoboCasa")
 
 
 if __name__ == "__main__":

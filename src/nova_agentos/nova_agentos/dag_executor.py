@@ -8,17 +8,32 @@ class DagExecutor:
     def __init__(self, adapter) -> None:
         self.adapter = adapter
 
-    def execute(self, graph: dict, task_id: str, on_step=None) -> dict[str, dict]:
+    def execute(
+        self,
+        graph: dict,
+        task_id: str,
+        on_step=None,
+        on_before_node=None,
+        on_after_node=None,
+    ) -> dict[str, dict]:
         nodes = {n["id"]: n for n in graph["nodes"]}
         results: dict[str, dict] = {}
         for nid in topo_order(graph["nodes"]):
             n = nodes[nid]
             params = self._resolve_params(n.get("params_json") or "{}", results)
-            if on_step:
-                on_step(nid)
-            result = self.adapter.execute(
-                n["tool_name"], params, trace_id=f"{task_id}:{nid}"
-            )
+            extra = on_before_node(nid, n) if on_before_node else None
+            if extra:
+                params.update(extra)
+            try:
+                if on_step:
+                    on_step(nid)
+                result = self.adapter.execute(
+                    n["tool_name"], params, trace_id=f"{task_id}:{nid}"
+                )
+            finally:
+                # 异常路径也必须执行清理(on_after_node 只会在 on_before_node 返回非 None 时调用)
+                if extra and on_after_node:
+                    on_after_node(nid, n)
             results[nid] = result
         return results
 

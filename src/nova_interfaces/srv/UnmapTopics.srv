@@ -1,0 +1,5 @@
+# 请求 topic_router 撤销一组话题转发映射
+string mapping_id
+---
+bool success
+string message
