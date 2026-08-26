@@ -1,43 +1,47 @@
 # 观测/动作的编码解码与归一化(无 ROS 依赖)。
 # 由 sim server 与 bridge 共用,保证两端格式一致。
-import base64
+# 传输走帧式二进制协议(jsonline.py):numpy 数组转成 __blob__ 占位符,字节收集到帧 body,免 base64。
 from typing import Any
 
 import numpy as np
 
 
-def encode_value(value: Any) -> Any:
+# 帧编码:值里的 numpy 数组替换为 __blob__ 占位符,原始字节收集进 blobs
+def encode_frame(value: Any, blobs: list[bytes]) -> Any:
     if isinstance(value, np.ndarray):
         array = np.ascontiguousarray(value)
-        return {
-            "__ndarray__": True,
-            "dtype": str(array.dtype),
-            "shape": list(array.shape),
-            "data": base64.b64encode(array.tobytes()).decode("ascii"),
-        }
+        blobs.append(array.tobytes())
+        return {"__blob__": len(blobs) - 1, "dtype": str(array.dtype), "shape": list(array.shape)}
     if isinstance(value, np.generic):
         return value.item()
     if isinstance(value, dict):
-        return {str(k): encode_value(v) for k, v in value.items()}
+        return {str(k): encode_frame(v, blobs) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [encode_value(v) for v in value]
+        return [encode_frame(v, blobs) for v in value]
     return value
 
 
-def decode_array(payload: dict[str, Any]) -> np.ndarray:
-    data = base64.b64decode(payload["data"])
-    array = np.frombuffer(data, dtype=np.dtype(payload["dtype"]))
-    return array.reshape(payload["shape"])
-
-
-def decode_observation(value: Any) -> Any:
-    if isinstance(value, dict) and value.get("__ndarray__") is True:
-        return decode_array(value)
+# 帧解码:按 header 里的 __blob__ 顺序切分 body,还原为 numpy 数组
+def decode_frame(value: Any, blobs: list[bytes]) -> Any:
+    if isinstance(value, dict) and "__blob__" in value:
+        raw = blobs[int(value["__blob__"])]
+        return np.frombuffer(raw, dtype=np.dtype(value["dtype"])).reshape(value["shape"])
     if isinstance(value, dict):
-        return {str(k): decode_observation(v) for k, v in value.items()}
+        return {str(k): decode_frame(v, blobs) for k, v in value.items()}
     if isinstance(value, list):
-        return [decode_observation(v) for v in value]
+        return [decode_frame(v, blobs) for v in value]
     return value
+
+
+# 帧 body 总字节数(所有 __blob__ 大小之和,用于读取)
+def blob_size(value: Any) -> int:
+    if isinstance(value, dict) and "__blob__" in value:
+        return int(np.dtype(value["dtype"]).itemsize) * int(np.prod(value["shape"]))
+    if isinstance(value, dict):
+        return sum(blob_size(v) for v in value.values())
+    if isinstance(value, list):
+        return sum(blob_size(v) for v in value)
+    return 0
 
 
 # 压缩观测值用于 topic 发布,大数组只保留 shape/dtype/min/max

@@ -17,7 +17,7 @@ from std_msgs.msg import Bool, Float32, Float32MultiArray, String
 from std_srvs.srv import Trigger
 
 from nova_common.jsonline import JsonLineClient
-from nova_common.obs_codec import decode_observation, summarize_value
+from nova_common.obs_codec import summarize_value
 from nova_interfaces.srv import EnvInfo
 
 # 相机图帧量大且实时,用 best_effort 防背压;obs/reward/success/action 走 reliable
@@ -103,7 +103,8 @@ class EnvBridgeBase(Node):
         return self.action_vector_to_native(np.zeros(self.action_spec["dim"], dtype=np.float32))
 
     def _absorb_response(self, response: dict[str, Any]) -> None:
-        self.obs = decode_observation(response["obs"])
+        # 帧协议已把 obs/info 里的 numpy 数组还原为 ndarray,直接用
+        self.obs = response["obs"]
         self.action_spec = response.get("action_spec") or self.action_spec
         self.obs_spec = response.get("obs_spec") or self.obs_spec
         self.sim_info = response.get("sim_info") or self.sim_info

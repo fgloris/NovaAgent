@@ -15,7 +15,7 @@ from std_msgs.msg import Float32MultiArray, String
 from nova_interfaces.action import MCPExecute
 from nova_interfaces.msg import ExecutorHeartbeat, ToolDescriptor
 
-from nova_vla_executor.remote_pi0 import RemotePi0Client
+from nova_vla_executor.pi0_bridge import RemotePi0Client
 
 HEARTBEAT_TOPIC = "/nova/executors/heartbeat"
 _CAM_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)

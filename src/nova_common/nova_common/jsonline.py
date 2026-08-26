@@ -1,10 +1,64 @@
-# 行式 JSON 协议客户端/服务端(无 ROS 依赖)。
+# 帧式二进制协议客户端/服务端(无 ROS 依赖)。
+# 帧格式:4 字节大端 header 长度 + header JSON + 二进制 body(所有 numpy 数组按序拼接)。
+# 数组在 header 里以 __blob__ 占位符描述(shape/dtype),原始字节放 body,免 base64。
 # JsonLineClient 由 bridge 使用;JsonLineServer/JsonLineRequestHandler 由 sim server 使用。
 import json
 import socket
 import socketserver
+import struct
 import traceback
 from typing import Any
+
+from nova_common.obs_codec import blob_size, decode_frame, encode_frame
+
+
+def _read_exact(reader, n: int) -> bytes:
+    chunks = []
+    remaining = n
+    while remaining > 0:
+        chunk = reader.read(remaining)
+        if not chunk:
+            raise ConnectionError("connection closed while reading frame")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _to_frame(payload: dict[str, Any]) -> bytes:
+    blobs: list[bytes] = []
+    header = encode_frame(payload, blobs)
+    header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
+    return struct.pack(">I", len(header_bytes)) + header_bytes + b"".join(blobs)
+
+
+def _from_frame(reader) -> dict[str, Any]:
+    header_bytes = _read_exact(reader, struct.unpack(">I", _read_exact(reader, 4))[0])
+    header = json.loads(header_bytes.decode("utf-8"))
+    body = _read_exact(reader, blob_size(header))
+    blobs = _split_blobs(header, body)
+    return decode_frame(header, blobs)
+
+
+# 按 header 里 __blob__ 的出现顺序切分 body
+def _split_blobs(header: Any, body: bytes) -> list[bytes]:
+    blobs = []
+    offset = 0
+    for size in _iter_blob_sizes(header):
+        blobs.append(body[offset:offset + size])
+        offset += size
+    return blobs
+
+
+def _iter_blob_sizes(value: Any):
+    if isinstance(value, dict) and "__blob__" in value:
+        yield blob_size(value)
+        return
+    if isinstance(value, dict):
+        for v in value.values():
+            yield from _iter_blob_sizes(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _iter_blob_sizes(v)
 
 
 class JsonLineClient:
@@ -23,18 +77,14 @@ class JsonLineClient:
             self.sock.close()
             self.sock = None
 
-    # 发送一行 JSON 请求并读取一行响应,失败时关闭连接
+    # 发送一帧请求并读取一帧响应,失败时关闭连接
     def request(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._connect()
         assert self.sock is not None
         assert self.file is not None
         try:
-            line = json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n"
-            self.sock.sendall(line)
-            response_line = self.file.readline()
-            if not response_line:
-                raise ConnectionError("sim server closed the connection")
-            response = json.loads(response_line.decode("utf-8"))
+            self.sock.sendall(_to_frame(payload))
+            response = _from_frame(self.file)
         except Exception:
             self.close()
             raise
@@ -55,11 +105,11 @@ class JsonLineClient:
 class JsonLineRequestHandler(socketserver.StreamRequestHandler):
     def handle(self) -> None:
         while True:
-            line = self.rfile.readline()
-            if not line:
+            try:
+                request = _from_frame(self.rfile)
+            except ConnectionError:
                 return
             try:
-                request = json.loads(line.decode("utf-8"))
                 response = self.dispatch(request)
             except Exception as exc:
                 response = {
@@ -67,8 +117,7 @@ class JsonLineRequestHandler(socketserver.StreamRequestHandler):
                     "error": str(exc),
                     "traceback": traceback.format_exc(),
                 }
-            self.wfile.write(json.dumps(response, separators=(",", ":")).encode("utf-8"))
-            self.wfile.write(b"\n")
+            self.wfile.write(_to_frame(response))
             self.wfile.flush()
 
     def dispatch(self, request: dict[str, Any]) -> dict[str, Any]:

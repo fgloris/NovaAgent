@@ -32,7 +32,7 @@ def _ensure_nova_common_importable() -> None:
 _ensure_nova_common_importable()
 
 from nova_common.jsonline import serve
-from nova_common.obs_codec import build_obs_spec, encode_value, normalize_obs
+from nova_common.obs_codec import build_obs_spec, normalize_obs
 
 
 # 规范动作向量 -> RoboCasa 动作 dict(缺省补零并截断到 [-1,1])
@@ -135,8 +135,8 @@ class RoboCasaSession:
         obs = self._prepare_obs(obs, info)
         return {
             "ok": True,
-            "obs": encode_value(obs),
-            "info": encode_value(info),
+            "obs": obs,
+            "info": info,
             "action_spec": self._action_spec(),
             "obs_spec": build_obs_spec(obs),
             "sim_info": self._sim_info(),
@@ -150,11 +150,11 @@ class RoboCasaSession:
         obs = self._prepare_obs(obs, info)
         return {
             "ok": True,
-            "obs": encode_value(obs),
+            "obs": obs,
             "reward": float(reward),
             "terminated": bool(terminated),
             "truncated": bool(truncated),
-            "info": encode_value(info),
+            "info": info,
             "action_spec": self._action_spec(),
             "obs_spec": build_obs_spec(obs),
             "sim_info": self._sim_info(),

@@ -10,9 +10,8 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml"]),
-        (f"share/{package_name}/remote", glob("remote/*.py")),
     ],
-    install_requires=["setuptools", "requests"],
+    install_requires=["setuptools", "requests", "websocket-client"],
     zip_safe=True,
     maintainer="ginger",
     maintainer_email="ginger@example.com",
@@ -21,6 +20,7 @@ setup(
     entry_points={
         "console_scripts": [
             "nova_vla_executor_node = nova_vla_executor.vla_executor_node:main",
+            "nova_pi0_server = nova_vla_executor.pi0_server:main",
         ],
     },
 )

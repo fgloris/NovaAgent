@@ -32,7 +32,7 @@ def _ensure_nova_common_importable() -> None:
 _ensure_nova_common_importable()
 
 from nova_common.jsonline import serve
-from nova_common.obs_codec import build_obs_spec, encode_value, normalize_obs
+from nova_common.obs_codec import build_obs_spec, normalize_obs
 
 
 # LIBERO 源码以 namespace 包形式安装(libero/libero),需要把 LIBERO 根目录加入 sys.path。
@@ -125,8 +125,8 @@ class LiberoSession:
         obs["state.instruction"] = self.language_instruction
         return {
             "ok": True,
-            "obs": encode_value(obs),
-            "info": encode_value(info),
+            "obs": obs,
+            "info": info,
             "action_spec": self._action_spec(),
             "obs_spec": build_obs_spec(obs),
             "sim_info": self._sim_info(),
@@ -145,11 +145,11 @@ class LiberoSession:
         obs["state.instruction"] = self.language_instruction
         return {
             "ok": True,
-            "obs": encode_value(obs),
+            "obs": obs,
             "reward": float(reward),
             "terminated": bool(done),
             "truncated": False,
-            "info": encode_value(info),
+            "info": info,
             "action_spec": self._action_spec(),
             "obs_spec": build_obs_spec(obs),
             "sim_info": self._sim_info(),
