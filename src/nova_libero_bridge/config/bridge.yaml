@@ -10,4 +10,4 @@ libero_bridge:
     zero_action_on_start: true
     server_host: "127.0.0.1"
     server_port: 8766
-    request_timeout_sec: 30.0
+    request_timeout_sec: 120.0

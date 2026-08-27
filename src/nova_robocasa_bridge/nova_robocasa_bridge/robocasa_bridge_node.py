@@ -6,7 +6,6 @@ import numpy as np
 import rclpy
 
 from nova_common.env_bridge import EnvBridgeBase
-from nova_robocasa_bridge.robocasa_sim_server import action_vector_to_dict
 
 
 class RoboCasaBridgeNode(EnvBridgeBase):
@@ -29,7 +28,7 @@ class RoboCasaBridgeNode(EnvBridgeBase):
         }
 
     def action_vector_to_native(self, values: np.ndarray):
-        return action_vector_to_dict(values)
+        return values
 
     def _extra_info(self) -> dict[str, Any]:
         info = dict(self.sim_info)
