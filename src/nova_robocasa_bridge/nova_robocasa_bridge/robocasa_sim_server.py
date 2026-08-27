@@ -232,10 +232,17 @@ class RoboCasaSession:
 
     def _sim_info(self) -> dict[str, Any]:
         config = self.env_config or {}
+        controller = ""
+        if self.env is not None:
+            try:
+                robots = self.env.unwrapped.robots
+                controller = robots[0].composite_controller.__class__.__name__
+            except Exception:
+                controller = ""
         return {
             "sim": "robocasa",
             "robots": config.get("robots", "PandaOmron"),
-            "controller": "",
+            "controller": controller,
             "env_id": config.get("env_id", ""),
         }
 

@@ -35,7 +35,55 @@ DEFAULT_OBS_KEY_MAP = {
 }
 
 
+def _ensure_robocasa_stub():
+    """robocasa-benchmark fork 的 openpi 在 import 阶段无条件 import robocasa(仅为注册 robocasa 训练配置),
+    而真 robocasa 硬锁 numpy==2.2.5 / mujoco==3.3.1 / robosuite>=1.5.2,与 openpi(numpy<2)冲突,无法同环境共存。
+    推理不碰 robocasa 数据(norm stats 从 checkpoint 的 assets/norm_stats.json 加载),
+    这里注入最小 stub 让 import 链通过;若环境里真装了 robocasa 则跳过。
+    """
+    import sys
+    import types
+
+    try:
+        import robocasa  # noqa: F401
+
+        return
+    except ImportError:
+        pass
+
+    def _module(name):
+        m = types.ModuleType(name)
+        m.__path__ = []
+        sys.modules[name] = m
+        return m
+
+    _module("robocasa")
+    macros = _module("robocasa.macros")
+    macros.DATASET_BASE_PATH = ""
+    _module("robocasa.utils")
+    registry = _module("robocasa.utils.dataset_registry")
+    registry.DATASET_SOUP_REGISTRY = {
+        "target50": [],
+        "target_atomic_seen": [],
+        "target_composite_seen": [],
+        "target_composite_unseen": [],
+        "pretrain_human300": [],
+        "pretrain_human300_mg60": [],
+    }
+    registry.get_ds_meta = lambda **kwargs: None
+    _module("robocasa.utils.groot_utils")
+    tags = _module("robocasa.utils.groot_utils.embodiment_tags")
+    tags.EmbodimentTag = type("EmbodimentTag", (), {"NEW_EMBODIMENT": "new_embodiment"})
+    ds = _module("robocasa.utils.groot_utils.groot_dataset")
+    ds.LeRobotSingleDataset = type("LeRobotSingleDataset", (), {})
+    ds.LeRobotMixtureDataset = type("LeRobotMixtureDataset", (), {})
+    ds.ModalityConfig = type("ModalityConfig", (), {})
+    ds.LE_ROBOT_MODALITY_FILENAME = "meta/modality.json"
+    ds.LE_ROBOT_EPISODE_FILENAME = "meta/episodes.jsonl"
+
+
 def _load_engine(checkpoint_dir: str, model_id: str):
+    _ensure_robocasa_stub()
     from openpi.policies import policy_config
     from openpi.training import config as _config
 

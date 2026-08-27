@@ -9,6 +9,9 @@ uv venv --python 3.11
 git clone --recurse-submodules https://github.com/Physical-Intelligence/openpi.git
 cd openpi && uv sync && uv pip install -e .
 uv pip install fastapi uvicorn
+# 若缺 chex/pytest(uv sync 不装 dev 组,fork 可能漏列 chex):
+uv pip install pytest
+uv pip install --no-deps chex==0.1.90   # 必须 --no-deps,否则会把 jax 0.5.3 升到不兼容版本
 ```
 - 运行 server：
 ```
