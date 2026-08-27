@@ -22,6 +22,7 @@
 import argparse
 import asyncio
 import json
+import os
 
 import numpy as np
 
@@ -112,7 +113,7 @@ def _parse_obs_key_map(items: list[str]) -> dict[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="pi0 推理 server(新版 openpi,无 ROS2,WebSocket 二进制)")
-    parser.add_argument("--checkpoint", required=True, help="openpi checkpoint 目录(新版,含 params/ 或 model.safetensors)")
+    parser.add_argument("--checkpoint", default=os.environ.get("ROBOCASA_CHECKPOINT_PATH"), help="openpi checkpoint 目录(新版,含 params/ 或 model.safetensors);默认取环境变量 ROBOCASA_CHECKPOINT_PATH")
     parser.add_argument("--model", default="pi05_libero", help="openpi training config 名,默认 pi05_libero")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8767)
@@ -123,6 +124,8 @@ def main() -> int:
         help='相机名=模型observation键,如 agentview=observation/image;可多个',
     )
     args = parser.parse_args()
+    if not args.checkpoint:
+        parser.error("--checkpoint 未提供,且环境变量 ROBOCASA_CHECKPOINT_PATH 未设置")
 
     global APP
     obs_key_map = _parse_obs_key_map(args.obs_key_map)
