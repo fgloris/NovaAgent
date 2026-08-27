@@ -24,10 +24,9 @@ robosuite>=1.4
 #   curl -LsSf https://astral.sh/uv/install.sh | sh
 #   git clone --recurse-submodules https://github.com/Physical-Intelligence/openpi.git
 #   cd openpi && uv sync && uv pip install -e .
-#   uv pip install fastapi uvicorn
-#   注意:若运行时缺 pytest / chex,务必用以下方式装(不要直接 uv pip install chex,
+#   uv pip install fastapi uvicorn pytest
+#   注意:若运行时缺 chex,务必用以下方式装(不要直接 uv pip install chex,
 #   否则会重解析把 jax 0.5.3 升到 0.10.x,orbax-checkpoint 直接报 DeviceLocalLayout 错误):
-#     uv pip install pytest
 #     uv pip install --no-deps chex==0.1.90
 # openpi 的 JAX/GPU 依赖(jax[cuda12]==0.5.3、torch==2.7.1、numpy<2.0.0 等)由 openpi 仓库
 # 自身管理,不要在此文件列出;也请勿把系统 3.10 环境的 numpy 降到 <2 去迁就它。

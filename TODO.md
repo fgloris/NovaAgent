@@ -24,4 +24,59 @@ opencode -s ses_fcc87a673ffes3DTdEUZaCf9Fn
 
 打通闭环后做完整验证，再做其他工作。
 
-# 8.26
+# 8.27
+
+## 闭环测试(在NovaAgent/执行)
+
+### 一、运行robocasa仿真
+terminal 1:
+```
+. ../robocasa/.venv/bin/activate
+python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
+```
+等显示
+```
+...
+[render] quality=low shadowsize=1024 offsamples=0 nlight=1 ambient=0.40 diffuse=0.60 specular=0.20 shininess=1.00
+...
+warmup done in 34.9s
+RoboCasa sim server listening on 127.0.0.1:8766
+```
+后，开terminal 2:
+
+```bash
+. install/setup.sh
+ros2 run nova_robocasa_bridge random_action_client
+```
+
+### 二、运行vla backend
+```
+. ../openpi/.venv/bin/activate
+python src/nova_vla_executor/nova_vla_executor/pi0_server.py
+```
+等显示
+```
+[pi0] loaded checkpoint: /home/ubuntu/data1/lxy/robocasa/robocasa365_checkpoints/pi0/pi0_robocasa_pretrain_human300/multitask_learning/75000 (model=pi0_robocasa_pretrain_human300)
+[pi0] serving on ws://0.0.0.0:8767/predict
+INFO:     Started server process [1549580]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8767 (Press CTRL+C to quit)
+```
+即可。
+
+### 三、连接foxglove
+如何不用sudo安装foxglove?
+用 apt install 下载二进制包，然后用 dpkg-deb -x 解压缩到外部文件夹，再补上环境变量。
+现在假设已经装好了foxglove。
+在本地运行：
+```
+ssh -f -N -L 8765:localhost:8765 MaA6000
+```
+在远端运行：
+```
+. ../env.sh
+. install/setup.sh
+ros2 run foxglove_bridge foxglove_bridge
+```
+

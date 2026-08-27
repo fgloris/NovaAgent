@@ -174,6 +174,7 @@ def main() -> int:
     args = parser.parse_args()
     if not args.checkpoint:
         parser.error("--checkpoint 未提供,且环境变量 ROBOCASA_CHECKPOINT_PATH 未设置")
+    args.checkpoint = os.path.expanduser(args.checkpoint)
 
     global APP
     obs_key_map = _parse_obs_key_map(args.obs_key_map)
