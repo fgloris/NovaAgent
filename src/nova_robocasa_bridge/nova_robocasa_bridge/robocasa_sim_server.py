@@ -56,11 +56,11 @@ def action_vector_to_dict(values: np.ndarray) -> dict[str, list[float]]:
     values = np.clip(values, -1.0, 1.0)
 
     return {
-        "action.end_effector_position": values[0:3].tolist(),
-        "action.end_effector_rotation": values[3:6].tolist(),
-        "action.gripper_close": [1.0 if values[6] >= 0.5 else 0.0],
-        "action.base_motion": values[7:11].tolist(),
-        "action.control_mode": [1.0 if values[11] >= 0.5 else 0.0],
+        "action.end_effector_position": values[0:3],
+        "action.end_effector_rotation": values[3:6],
+        "action.gripper_close": float(values[6]),
+        "action.base_motion": values[7:11],
+        "action.control_mode": float(values[11]),
     }
 
 
@@ -285,7 +285,26 @@ def main() -> int:
     scene_path = args.scene_config or _default_scene_config()
     scene_config = _load_scene_config(scene_path)
     print(f"scene config: {scene_path or '(none)'}", flush=True)
-    return serve(args.host, args.port, RoboCasaSession(scene_config), "RoboCasa")
+    session = RoboCasaSession(scene_config)
+
+    # 预热:提前加载场景/资产到缓存,让第一个 reset 秒回
+    import time
+    t0 = time.time()
+    print("warming up environment (may take a while)...", flush=True)
+    try:
+        session.reset(
+            {
+                "env_id": scene_config.get("env_id", "robocasa/PickPlaceCounterToCabinet"),
+                "seed": int(scene_config.get("seed", 0)),
+                "camera_width": int(scene_config.get("camera_width", 512)),
+                "camera_height": int(scene_config.get("camera_height", 512)),
+            }
+        )
+    except Exception as exc:
+        print(f"warmup failed (will lazily init on first reset): {exc}", flush=True)
+
+    print(f"warmup done in {time.time() - t0:.1f}s", flush=True)
+    return serve(args.host, args.port, session, "RoboCasa")
 
 
 if __name__ == "__main__":
