@@ -3,6 +3,7 @@
 # 传输走帧式二进制协议(jsonline.py):numpy 数组转成 __blob__ 占位符,字节收集到帧 body,免 base64。
 # future annotations:兼容 python3.8 的 libero conda 环境
 from __future__ import annotations
+import re
 from typing import Any
 
 import numpy as np
@@ -69,8 +70,12 @@ def summarize_value(value: Any) -> Any:
 # 键名统一规则:
 #   3D 且 shape[-1]==3 的数组 -> video.{key};若 key 以 "_image" 结尾则先剥掉
 #   其余(含字符串/标量/低维数组) -> state.{key}
+# 相机名里的非法字符(. 等)替换为 _,否则 ROS2 话题名会非法
 # LIBERO 键 agentview      -> video.agentview
 # RoboCasa 键 agentview_image -> video.agentview(剥 _image,相机名统一)
+def _safe_camera_name(name: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_]", "_", name)
+
 def normalize_obs(obs: dict[str, Any]) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     for key, value in obs.items():
@@ -78,7 +83,7 @@ def normalize_obs(obs: dict[str, Any]) -> dict[str, Any]:
             name = key
             if name.endswith("_image"):
                 name = name[: -len("_image")]
-            normalized[f"video.{name}"] = value
+            normalized[f"video.{_safe_camera_name(name)}"] = value
         else:
             normalized[f"state.{key}"] = value
     return normalized
