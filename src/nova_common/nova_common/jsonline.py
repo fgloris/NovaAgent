@@ -25,6 +25,13 @@ def _read_exact(reader, n: int) -> bytes:
     return b"".join(chunks)
 
 
+# 空闲 idle_sec 后开始 keepalive 探测,间隔 interval_sec;连续探测次数用系统默认
+def _set_keepalive(sock: socket.socket, idle_sec: int = 60, interval_sec: int = 30) -> None:
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, idle_sec)
+    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, interval_sec)
+
+
 def _to_frame(payload: dict[str, Any]) -> bytes:
     blobs: list[bytes] = []
     header = encode_frame(payload, blobs)
@@ -99,6 +106,7 @@ class JsonLineClient:
             return
         sock = socket.create_connection((self.host, self.port), timeout=self.timeout_sec)
         sock.settimeout(self.timeout_sec)
+        _set_keepalive(sock)
         self.sock = sock
         self.file = sock.makefile("rb")
 
@@ -118,8 +126,11 @@ class JsonLineRequestHandler(socketserver.StreamRequestHandler):
                     "error": str(exc),
                     "traceback": traceback.format_exc(),
                 }
-            self.wfile.write(_to_frame(response))
-            self.wfile.flush()
+            try:
+                self.wfile.write(_to_frame(response))
+                self.wfile.flush()
+            except (ConnectionError, BrokenPipeError, OSError):
+                return
 
     def dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
         request_type = request.get("type")
@@ -140,6 +151,11 @@ class JsonLineServer(socketserver.ThreadingTCPServer):
     def __init__(self, address, session: Any) -> None:
         self.session = session
         super().__init__(address, JsonLineRequestHandler)
+
+    def get_request(self):
+        sock, addr = super().get_request()
+        _set_keepalive(sock)
+        return sock, addr
 
 
 def serve(host: str, port: int, session: Any, name: str) -> int:

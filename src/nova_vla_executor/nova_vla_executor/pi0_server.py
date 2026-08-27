@@ -13,7 +13,7 @@
     {"action": [0.1, ...], "action_dim": 7}
 
 观测键映射:客户端发的相机名 -> 模型 config 的 observation 键。
-默认按 pi05_libero(observation/image 第三视角 + observation/wrist_image 腕部)配置;
+默认按 robocasa(pi0_robocasa_pretrain_human300,observation/image 第三视角 + observation/wrist_image 腕部)配置;
 换模型可用 --obs-key-map 覆盖,例如:
     python pi0_server.py --model pi0_droid \
       --obs-key-map agentview=observation/exterior_image_1_left \
@@ -28,7 +28,7 @@ import numpy as np
 
 APP = None  # FastAPI app(延迟 import,避免 --help 也要 fastapi)
 
-# 相机名 -> 模型 config 的 observation 键(pi05_libero / pi0_libero 默认布局)
+# 相机名 -> 模型 config 的 observation 键(pi0_robocasa 默认布局)
 DEFAULT_OBS_KEY_MAP = {
     "agentview": "observation/image",
     "robot0_eye_in_hand": "observation/wrist_image",
@@ -114,7 +114,7 @@ def _parse_obs_key_map(items: list[str]) -> dict[str, str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="pi0 推理 server(新版 openpi,无 ROS2,WebSocket 二进制)")
     parser.add_argument("--checkpoint", default=os.environ.get("ROBOCASA_CHECKPOINT_PATH"), help="openpi checkpoint 目录(新版,含 params/ 或 model.safetensors);默认取环境变量 ROBOCASA_CHECKPOINT_PATH")
-    parser.add_argument("--model", default="pi05_libero", help="openpi training config 名,默认 pi05_libero")
+    parser.add_argument("--model", default="pi0_robocasa_pretrain_human300", help="openpi training config 名,默认 pi0_robocasa_pretrain_human300")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8767)
     parser.add_argument(
