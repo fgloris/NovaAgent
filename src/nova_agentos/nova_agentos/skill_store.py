@@ -1,7 +1,8 @@
 # skill 存储:管理任务型领域经验(skill 是纯文本,不涉及执行)。
 # 目录结构:skills/<name>/SKILL.yaml(元数据) + skills/<name>/SKILL.md(经验正文)。
+# future annotations:避免类作用域里 list 方法遮蔽内置 list,导致 load 注解报错
+from __future__ import annotations
 from pathlib import Path
-
 import yaml
 
 

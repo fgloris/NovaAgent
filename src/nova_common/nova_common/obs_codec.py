@@ -1,6 +1,8 @@
 # 观测/动作的编码解码与归一化(无 ROS 依赖)。
 # 由 sim server 与 bridge 共用,保证两端格式一致。
 # 传输走帧式二进制协议(jsonline.py):numpy 数组转成 __blob__ 占位符,字节收集到帧 body,免 base64。
+# future annotations:兼容 python3.8 的 libero conda 环境
+from __future__ import annotations
 from typing import Any
 
 import numpy as np

@@ -28,7 +28,7 @@ class DagExecutor:
                 if on_step:
                     on_step(nid)
                 result = self.adapter.execute(
-                    n["tool_name"], params, trace_id=f"{task_id}:{nid}"
+                    n["tool_name"], params, trace_id=f"{task_id}_{nid}"
                 )
             finally:
                 # 异常路径也必须执行清理(on_after_node 只会在 on_before_node 返回非 None 时调用)

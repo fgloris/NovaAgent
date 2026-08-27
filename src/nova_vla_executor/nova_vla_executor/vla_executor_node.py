@@ -7,6 +7,7 @@ import time
 
 import numpy as np
 import rclpy
+from rclpy.action import ActionServer
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
@@ -45,8 +46,8 @@ class VLAExecutorNode(Node):
         self.client = RemotePi0Client(self.server_url, self.request_timeout)
         self._bindings = {"cameras": self.camera_names, "state": self.state_keys}
 
-        self.create_action_server(
-            MCPExecute, f"/{self.get_name()}/pi0_policy/execute", self._execute_cb
+        self._action_server = ActionServer(
+            self, MCPExecute, f"/{self.get_name()}/pi0_policy/execute", self._execute_cb
         )
         self._heartbeat_pub = self.create_publisher(ExecutorHeartbeat, HEARTBEAT_TOPIC, 1)
         self.create_timer(1.0 / max(rate, 0.1), self._publish_heartbeat)

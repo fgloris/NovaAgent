@@ -244,7 +244,7 @@ def execute(self, graph, task_id, on_step=None, on_before_node=None, on_after_no
 
   `on_before_node(nid, node)`:
   1. 取 `bindings = bindings_of(node["tool_name"])`;为空则直接返回
-  2. `mapping_id = f"{task_id}:{nid}"`, `ns = f"/nova/session/{mapping_id}"`
+  2. `mapping_id = f"{task_id}_{nid}"`, `ns = f"/nova/session/{mapping_id}"`
   3. 组装 entries(相机名取 bindings 指定∩env_info 实际;bindings 相机为空则全部)并调用 `MapTopics`
   4. 把 `ns` 注入该节点参数:`node_params["topic_namespace"] = ns`(供 executor 读取)
   5. 等待 router 确认(动态 topic 需要 discovery 时间,MapTopics 响应前短暂等待/重试)

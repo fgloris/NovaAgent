@@ -1,7 +1,12 @@
 from glob import glob
+from pathlib import Path
 from setuptools import find_packages, setup
 
 package_name = "nova_agentos"
+
+# skills/<name>/{SKILL.yaml,SKILL.md} 必须按子目录安装,SkillStore 依赖该结构
+_skill_dirs = sorted(d for d in Path("skills").iterdir() if d.is_dir())
+skill_files = [(f"share/{package_name}/skills/{d.name}", glob(f"skills/{d.name}/*")) for d in _skill_dirs]
 
 setup(
     name=package_name,
@@ -11,7 +16,7 @@ setup(
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml"]),
         (f"share/{package_name}/launch", glob("launch/*.launch.py")),
-        (f"share/{package_name}/skills", glob("skills/*/SKILL.yaml") + glob("skills/*/SKILL.md")),
+        *skill_files,
     ],
     install_requires=["setuptools", "PyYAML"],
     zip_safe=True,

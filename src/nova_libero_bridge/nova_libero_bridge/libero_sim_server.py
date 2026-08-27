@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-
 import argparse
 import os
 import sys
 from pathlib import Path
 from typing import Any
+import numpy as np
 
 os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
 os.environ.setdefault("NUMBA_CACHE_DIR", "/tmp/numba_cache")
 
-import numpy as np
 
 
 # 直接 python 运行时(未 source install/setup.bash)也能找到 nova_common 包

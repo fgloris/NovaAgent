@@ -1,16 +1,6 @@
 #!/usr/bin/env python3
 """pi0 推理 HTTP server —— 部署在 GPU 服务器(如 A6000,不需要安装 ROS2)。
 
-依赖 Python >= 3.11 + openpi 仓库(建议 uv 创建独立环境):
-    git clone --recurse-submodules https://github.com/Physical-Intelligence/openpi.git
-    cd openpi && uv sync && uv pip install -e .
-    uv pip install fastapi uvicorn
-
-用法:
-    python pi0_server.py --checkpoint /path/to/checkpoint_dir --model pi05_libero --host 0.0.0.0 --port 8001
-  --checkpoint 是新版 openpi 的 checkpoint **目录**(内含 params/ 或 model.safetensors),
-  与旧版(单文件路径)不同;gs:// 路径会被自动下载。
-
 通信:WebSocket /predict,二进制帧(免 base64)。
 客户端 -> 服务端(二进制):
     首行 JSON header + 图像原始字节拼接。header:

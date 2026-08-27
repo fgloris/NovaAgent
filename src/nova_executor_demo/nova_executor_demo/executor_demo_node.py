@@ -7,6 +7,7 @@ import random
 import time
 
 import rclpy
+from rclpy.action import ActionServer
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
@@ -82,9 +83,11 @@ class ExecutorDemoNode(Node):
             "pi0_policy": self._run_pi0_policy,
         }
 
+        self._action_servers = []
         for name, (desc, schema, _) in TOOL_SPECS.items():
             action_server = f"/{self.get_name()}/{name}/execute"
-            self.create_action_server(MCPExecute, action_server, self._make_execute_cb(name))
+            server = ActionServer(self, MCPExecute, action_server, self._make_execute_cb(name))
+            self._action_servers.append(server)
             self.get_logger().info(f"tool {name} @ {action_server}")
 
         self._heartbeat_pub = self.create_publisher(ExecutorHeartbeat, HEARTBEAT_TOPIC, 1)
@@ -141,7 +144,7 @@ class ExecutorDemoNode(Node):
 
         state = {"camera_frame": None, "action_dim": 0}
         cam_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
-        sub_cam = self.create_subscription(Image, f"{ns}/camera/agentview", self._make_cam_cb(state), cam_qos)
+        sub_cam = self.create_subscription(Image, f"{ns}/camera/agentview/image_raw", self._make_cam_cb(state), cam_qos)
         sub_state = self.create_subscription(String, f"{ns}/state", self._make_state_cb(state), 10)
         pub_action = self.create_publisher(Float32MultiArray, f"{ns}/action_cmd", 10)
         try:

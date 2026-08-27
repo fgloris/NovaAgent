@@ -86,8 +86,9 @@ class AgentosNode(Node):
                 bindings = self._bindings.get(n["tool_name"])
                 if not bindings:
                     return None
-                mapping_id = f"{task_id}:{nid}"
-                ns = f"/nova/session/{mapping_id}"
+                mapping_id = f"{task_id}_{nid}"
+                # ROS 2 topic 名不允许冒号,命名空间里用下划线代替
+                ns = f"/nova/session/{mapping_id}".replace(":", "_")
                 src, dst, types = self._build_mapping(ns, bindings)
                 if not src:
                     return None
@@ -97,7 +98,7 @@ class AgentosNode(Node):
                 return {"topic_namespace": ns}
 
             def on_after_node(nid, n):
-                mapping_id = f"{task_id}:{nid}"
+                mapping_id = f"{task_id}_{nid}"
                 if mapping_id in self._active_mappings:
                     self._call_unmap_topics(mapping_id)
                     self._active_mappings.pop(mapping_id, None)

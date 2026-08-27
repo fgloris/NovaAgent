@@ -4,7 +4,7 @@
 import time
 
 import rclpy
-from rclpy.action import ActionClient
+from rclpy.action import ActionClient, ActionServer
 from rclpy.node import Node
 
 from nova_interfaces.action import MCPExecute
@@ -30,8 +30,8 @@ class ExecutorManagerNode(Node):
         self.create_service(
             ListTools, str(self.get_parameter("list_tools_service").value), self._list_tools_cb
         )
-        self.create_action_server(
-            MCPExecute, str(self.get_parameter("execute_action").value), self._execute_cb
+        self._action_server = ActionServer(
+            self, MCPExecute, str(self.get_parameter("execute_action").value), self._execute_cb
         )
         self.create_timer(1.0, self._expire_check)
 

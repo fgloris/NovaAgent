@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-
 import random
-
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray

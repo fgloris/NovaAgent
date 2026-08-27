@@ -2,6 +2,7 @@
 # 帧格式:4 字节大端 header 长度 + header JSON + 二进制 body(所有 numpy 数组按序拼接)。
 # 数组在 header 里以 __blob__ 占位符描述(shape/dtype),原始字节放 body,免 base64。
 # JsonLineClient 由 bridge 使用;JsonLineServer/JsonLineRequestHandler 由 sim server 使用。
+from __future__ import annotations
 import json
 import socket
 import socketserver
