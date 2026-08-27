@@ -69,7 +69,7 @@ ros2 launch nova_libero_bridge libero_bridge.launch.py
 ```bash
 /home/ginger/miniconda3/envs/libero/bin/python \
   /home/ginger/Documents/workspace/CapX/NovaAgent/install/nova_libero_bridge/lib/python3.10/site-packages/nova_libero_bridge/libero_sim_server.py \
-  --host 127.0.0.1 --port 8767
+  --host 127.0.0.1 --port 8766
 ```
 
 然后在另一个终端启动 ROS 桥接器。可用 launch 参数覆盖任务与相机：

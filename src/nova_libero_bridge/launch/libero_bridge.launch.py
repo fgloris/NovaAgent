@@ -15,7 +15,7 @@ def generate_launch_description():
             DeclareLaunchArgument("benchmark", default_value="libero_spatial"),
             DeclareLaunchArgument("task_id", default_value="0"),
             DeclareLaunchArgument("server_host", default_value="127.0.0.1"),
-            DeclareLaunchArgument("server_port", default_value="8767"),
+            DeclareLaunchArgument("server_port", default_value="8766"),
             Node(
                 package="nova_libero_bridge",
                 executable="libero_bridge_node",

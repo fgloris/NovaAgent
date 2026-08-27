@@ -29,7 +29,7 @@ def _image_to_numpy(msg: Image) -> np.ndarray:
 class VLAExecutorNode(Node):
     def __init__(self) -> None:
         super().__init__("nova_vla_executor")
-        self.declare_parameter("server_url", "http://127.0.0.1:8001")
+        self.declare_parameter("server_url", "http://127.0.0.1:8767")
         self.declare_parameter("request_timeout_sec", 60.0)
         self.declare_parameter("heartbeat_rate_hz", 1.0)
         self.declare_parameter("camera_names", ["agentview", "robot0_eye_in_hand"])

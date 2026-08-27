@@ -269,7 +269,7 @@ def _default_scene_config() -> str | None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8767)
+    parser.add_argument("--port", type=int, default=8766)
     parser.add_argument(
         "--scene-config",
         default=None,

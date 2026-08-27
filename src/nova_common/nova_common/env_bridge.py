@@ -33,7 +33,7 @@ class EnvBridgeBase(Node):
         self.declare_parameter("auto_reset", True)
         self.declare_parameter("zero_action_on_start", True)
         self.declare_parameter("server_host", "127.0.0.1")
-        self.declare_parameter("server_port", 8767)
+        self.declare_parameter("server_port", 8766)
         self.declare_parameter("request_timeout_sec", 30.0)
 
         self.camera_width = int(self.get_parameter("camera_width").value)

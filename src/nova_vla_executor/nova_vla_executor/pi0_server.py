@@ -115,7 +115,7 @@ def main() -> int:
     parser.add_argument("--checkpoint", required=True, help="openpi checkpoint 目录(新版,含 params/ 或 model.safetensors)")
     parser.add_argument("--model", default="pi05_libero", help="openpi training config 名,默认 pi05_libero")
     parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8001)
+    parser.add_argument("--port", type=int, default=8767)
     parser.add_argument(
         "--obs-key-map",
         nargs="*",

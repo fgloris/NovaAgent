@@ -12,5 +12,5 @@ uv pip install fastapi uvicorn
 ```
 - 运行 server：
 ```
-python pi0_server.py --checkpoint /path/to/checkpoint_dir --model pi05_libero --host 0.0.0.0 --port 8001
+python pi0_server.py --checkpoint /path/to/checkpoint_dir --model pi05_libero --host 0.0.0.0 --port 8767
 ```

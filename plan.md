@@ -8,7 +8,7 @@
 
 | 文件 | 角色 | 关键点 |
 |---|---|---|
-| `src/nova_libero_bridge/nova_libero_bridge/libero_sim_server.py` | LIBERO TCP 仿真服务 | `normalize_obs`(:67)已归一化为 `video.*`/`state.*`;动作透传;TCP 8767 |
+| `src/nova_libero_bridge/nova_libero_bridge/libero_sim_server.py` | LIBERO TCP 仿真服务 | `normalize_obs`(:67)已归一化为 `video.*`/`state.*`;动作透传;TCP 8766 |
 | `src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py` | RoboCasa TCP 仿真服务 | obs **未归一化**;动作收 dict;TCP 8766 |
 | `src/nova_libero_bridge/nova_libero_bridge/libero_bridge_node.py` | LIBERO 桥 | `ACTION_DIM=7`(:23)硬编码;发 `/nova/libero/*` |
 | `src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_bridge_node.py` | RoboCasa 桥 | `ACTION_KEYS`/12 维映射(:22,:32);发 `/nova/robocasa/*`;`video.*` 前缀匹配不到 robosuite 原始键 → 相机/state 实为空 |
@@ -279,7 +279,7 @@ colcon build --symlink-install
 ### 9.2 单桥手动验证(以 libero 为例,robocasa 同理)
 ```
 # 终端1:sim server
-python src/nova_libero_bridge/nova_libero_bridge/libero_sim_server.py --port 8767
+python src/nova_libero_bridge/nova_libero_bridge/libero_sim_server.py --port 8766
 # 终端2:bridge(先 source install/setup.bash)
 ros2 run nova_libero_bridge libero_bridge_node
 # 检查
