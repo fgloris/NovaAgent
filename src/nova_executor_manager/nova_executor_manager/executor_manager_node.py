@@ -25,7 +25,8 @@ class ExecutorManagerNode(Node):
 
         # tool_name -> {"desc": ToolDescriptor, "executor": str, "last_seen": float}
         self._registry: dict[str, dict] = {}
-        self._clients: dict[str, ActionClient] = {}
+        # 转发用 ActionClient 缓存;注意不能叫 _clients,rclpy Node 内部占用该名字
+        self._action_clients: dict[str, ActionClient] = {}
         # 独立 callback group:execute 回调内同步等待转发结果,避免与默认组互斥卡死
         self._fwd_cg = MutuallyExclusiveCallbackGroup()
 
@@ -54,7 +55,7 @@ class ExecutorManagerNode(Node):
         now = time.time()
         for name in [n for n, e in self._registry.items() if now - e["last_seen"] > self._timeout]:
             entry = self._registry.pop(name)
-            self._clients.pop(entry["desc"].action_server_name, None)
+            self._action_clients.pop(entry["desc"].action_server_name, None)
             self.get_logger().warn(f"工具 {name} 下线(心跳超时,executor: {entry['executor']})")
 
     def _list_tools_cb(self, request, response):
@@ -63,10 +64,10 @@ class ExecutorManagerNode(Node):
         return response
 
     def _get_client(self, action_server_name: str) -> ActionClient:
-        client = self._clients.get(action_server_name)
+        client = self._action_clients.get(action_server_name)
         if client is None:
             client = ActionClient(self, MCPExecute, action_server_name, callback_group=self._fwd_cg)
-            self._clients[action_server_name] = client
+            self._action_clients[action_server_name] = client
         return client
 
     def _execute_cb(self, goal_handle):
