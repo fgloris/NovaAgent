@@ -93,13 +93,16 @@ class AgentosNode(Node):
                 mapping_id = f"{task_id}_{nid}"
                 # ROS 2 topic 名不允许冒号,也不允许 token 以数字开头,
                 ns = f"/nova/session/s_{mapping_id}"
-                src, dst, types = self._build_mapping(ns, bindings)
+                src, dst, types, cam_selected = self._build_mapping(ns, bindings)
                 if not src:
                     return None
                 if not self._call_map_topics(mapping_id, src, dst, types):
                     raise RuntimeError(f"MapTopics 失败: {mapping_id}")
                 self._active_mappings[mapping_id] = True
-                return {"topic_namespace": ns}
+                extra = {"topic_namespace": ns}
+                if cam_selected:
+                    extra["camera_names"] = cam_selected
+                return extra
 
             def on_after_node(nid, n):
                 mapping_id = f"{task_id}_{nid}"
@@ -156,15 +159,16 @@ class AgentosNode(Node):
         self.get_logger().info(f"env_info 就绪, cameras={list(cameras.keys())}")
         return info
 
-    # 组装转发映射:bindings 指定相机 ∩ env_info 实际相机;bindings 相机为空则全部;动作回路固定
-    def _build_mapping(self, ns: str, bindings: dict) -> tuple[list, list, list]:
+    # 组装转发映射:bindings 声明相机(可为逻辑名)→ env_info 自发现的实际相机;动作回路固定。
+    # 返回 (src, dst, types, cam_selected),cam_selected 为实际命中的相机名,供注入给 executor。
+    def _build_mapping(self, ns: str, bindings: dict) -> tuple[list, list, list, list]:
         src, dst, types = [], [], []
         cameras = {}
         if self._env_info:
             cameras = (self._env_info.get("obs_spec") or {}).get("cameras") or {}
         cam_bindings = bindings.get("cameras") or []
         if cam_bindings:
-            cam_selected = [c for c in cam_bindings if c in cameras]
+            cam_selected = self._match_cameras(cam_bindings, cameras)
         else:
             cam_selected = list(cameras.keys())
         for cam in cam_selected:
@@ -182,7 +186,22 @@ class AgentosNode(Node):
         src.append(f"{ns}/action_cmd")
         dst.append("/nova/env/action_cmd")
         types.append("float32multi")
-        return src, dst, types
+        return src, dst, types, cam_selected
+
+    # bindings 逻辑名 -> env 实际相机名:精确匹配优先,其次子串包含匹配(如 agentview -> video_robot0_agentview_left)
+    def _match_cameras(self, cam_bindings: list, cameras: dict) -> list:
+        matched = []
+        seen = set()
+        for b in cam_bindings:
+            cands = [c for c in cameras if c == b] or [c for c in cameras if b in c]
+            if not cands:
+                self.get_logger().warn(f"bindings 相机 {b} 在 env_info 中未找到")
+                continue
+            for c in cands:
+                if c not in seen:
+                    seen.add(c)
+                    matched.append(c)
+        return matched
 
     def _call_map_topics(self, mapping_id, src, dst, types) -> bool:
         if not self._map_client.wait_for_service(timeout_sec=5.0):

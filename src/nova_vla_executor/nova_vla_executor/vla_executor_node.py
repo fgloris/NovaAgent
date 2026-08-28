@@ -71,6 +71,7 @@ class VLAExecutorNode(Node):
                 "type": "object",
                 "properties": {
                     "topic_namespace": {"type": "string", "description": "AgentOS 注入的 session 命名空间,无需用户提供"},
+                    "camera_names": {"type": "array", "items": {"type": "string"}, "description": "AgentOS 自发现后注入的实际相机名,无需用户提供"},
                     "duration_sec": {"type": "number", "description": "策略运行秒数"},
                     "instruction": {"type": "string", "description": "可选的指令覆盖(默认取 state JSON 的 instruction)"},
                 },
@@ -109,11 +110,13 @@ class VLAExecutorNode(Node):
         instruction_override = str(params.get("instruction", "")).strip() or None
         if not ns:
             return {"ok": False, "executed": False, "error": "缺少 topic_namespace(需 AgentOS 注入)"}
+        # agentos 自发现后注入的实际相机名;未注入则回退到本节点配置的逻辑名
+        camera_names = list(params.get("camera_names") or self.camera_names)
         base = ns + "/"
 
         buf = {"frames": {}, "doc": None, "step": None, "dim": None}
         subs = []
-        for cam in self.camera_names:
+        for cam in camera_names:
             sub = self.create_subscription(
                 Image, f"{base}camera/{cam}/image_raw", self._make_cam_cb(buf, cam), _CAM_QOS
             )
@@ -127,7 +130,7 @@ class VLAExecutorNode(Node):
             # 等全部相机帧与 state 都就绪(容忍动态 topic discovery 延迟)
             deadline = time.time() + 5.0
             while time.time() < deadline and (
-                len(buf["frames"]) < len(self.camera_names) or buf["doc"] is None
+                len(buf["frames"]) < len(camera_names) or buf["doc"] is None
             ):
                 rclpy.spin_once(self, timeout_sec=0.2)
             if not buf["frames"] or buf["doc"] is None:
