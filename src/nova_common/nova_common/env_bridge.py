@@ -12,7 +12,7 @@ os.makedirs(os.environ["ROS_LOG_DIR"], exist_ok=True)
 import numpy as np
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage, Image
 from std_msgs.msg import Bool, Float32, Float32MultiArray, String
 from std_srvs.srv import Trigger
 
@@ -62,6 +62,7 @@ class EnvBridgeBase(Node):
         self.last_done = False
         self.step_count = 0
         self.camera_publishers: dict[str, Any] = {}
+        self.compressed_publishers: dict[str, Any] = {}
 
         self._declare_custom_params()
 
@@ -204,7 +205,9 @@ class EnvBridgeBase(Node):
                 continue
             topic = f"/nova/env/camera/{name}/image_raw"
             self.camera_publishers[name] = self.create_publisher(Image, topic, _CAMERA_QOS)
-            self.get_logger().info(f"Camera publisher: {topic}")
+            comp_topic = f"/nova/env/camera/{name}/compressed"
+            self.compressed_publishers[name] = self.create_publisher(CompressedImage, comp_topic, _CAMERA_QOS)
+            self.get_logger().info(f"Camera publisher: {topic} / {comp_topic}")
 
     def _publish_observation(self) -> None:
         if self.obs is None:
@@ -251,6 +254,13 @@ class EnvBridgeBase(Node):
             image_msg.header.stamp = stamp
             image_msg.header.frame_id = name
             publisher.publish(image_msg)
+            comp_pub = self.compressed_publishers.get(name)
+            if comp_pub is not None and comp_pub.get_subscription_count() > 0:
+                comp_msg = CompressedImage()
+                comp_msg.header = image_msg.header
+                comp_msg.format = "jpeg"
+                comp_msg.data = self._numpy_rgb_to_jpeg(image)
+                comp_pub.publish(comp_msg)
 
     def _numpy_rgb_to_image_msg(self, image: np.ndarray) -> Image:
         if image.dtype != np.uint8:
@@ -264,6 +274,17 @@ class EnvBridgeBase(Node):
         msg.step = int(image.shape[1] * 3)
         msg.data = image.tobytes()
         return msg
+
+    def _numpy_rgb_to_jpeg(self, image: np.ndarray) -> bytes:
+        if image.dtype != np.uint8:
+            image = np.clip(image, 0, 255).astype(np.uint8)
+        import io
+
+        from PIL import Image as PILImage
+
+        buf = io.BytesIO()
+        PILImage.fromarray(image, mode="RGB").save(buf, format="JPEG", quality=80)
+        return buf.getvalue()
 
     def destroy_node(self) -> bool:
         if self.client is not None:

@@ -2,9 +2,9 @@ robocasa_bridge:
   ros__parameters:
     env_id: "robocasa/PickPlaceCounterToCabinet"
     seed: 0
-    camera_width: 512
-    camera_height: 512
-    publish_rate_hz: 20.0
+    camera_width: 256
+    camera_height: 256
+    publish_rate_hz: 5.0
     auto_reset: true
     zero_action_on_start: true
     server_host: "127.0.0.1"
