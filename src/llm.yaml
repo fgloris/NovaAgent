@@ -1,20 +1,20 @@
 # LLM 供应商配置。providers 按顺序尝试,失败自动回退下一个。
 # 支持 kind: openai / anthropic。
 providers:
-  - name: vectorengine
-    kind: openai
-    base_url: "https://api.vectorengine.cn/v1"
-    api_key_env: VECTOR_ENGINE_API_KEY
-    model: gpt-5.6-sol
-    max_tokens: 128000
-    temperature: 0.1
-    timeout_sec: 60.0
-
   - name: deepseek
     kind: openai
     base_url: "https://api.deepseek.com/v1"
     api_key_env: "DEEPSEEK_API_KEY"
     model: "deepseek-v4-pro"
+    max_tokens: 128000
+    temperature: 0.1
+    timeout_sec: 60.0
+    
+  - name: vectorengine
+    kind: openai
+    base_url: "https://api.vectorengine.cn/v1"
+    api_key_env: VECTOR_ENGINE_API_KEY
+    model: gpt-5.6-sol
     max_tokens: 128000
     temperature: 0.1
     timeout_sec: 60.0
