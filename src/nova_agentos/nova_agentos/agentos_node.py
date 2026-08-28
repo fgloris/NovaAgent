@@ -145,11 +145,16 @@ class AgentosNode(Node):
         future = self._env_info_client.call_async(EnvInfo.Request())
         rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
         if not future.done():
+            self.get_logger().warn("env_info 调用超时,跳过仿真自发现")
             return None
         resp = future.result()
         if not resp.success or not resp.spec_json:
+            self.get_logger().warn(f"env_info 无有效 spec(success={resp.success}, spec_json={bool(resp.spec_json)})")
             return None
-        return json.loads(resp.spec_json)
+        info = json.loads(resp.spec_json)
+        cameras = (info.get("obs_spec") or {}).get("cameras") or {}
+        self.get_logger().info(f"env_info 就绪, cameras={list(cameras.keys())}")
+        return info
 
     # 组装转发映射:bindings 指定相机 ∩ env_info 实际相机;bindings 相机为空则全部;动作回路固定
     def _build_mapping(self, ns: str, bindings: dict) -> tuple[list, list, list]:
@@ -166,6 +171,10 @@ class AgentosNode(Node):
             src.append(f"/nova/env/camera/{cam}/image_raw")
             dst.append(f"{ns}/camera/{cam}/image_raw")
             types.append("image")
+        self.get_logger().info(
+            f"build_mapping ns={ns} cameras(env)={list(cameras.keys())} "
+            f"cam_bindings={cam_bindings} cam_selected={cam_selected}"
+        )
         if bindings.get("state"):
             src.append("/nova/env/obs")
             dst.append(f"{ns}/state")

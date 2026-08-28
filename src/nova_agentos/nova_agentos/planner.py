@@ -95,7 +95,11 @@ class Planner:
             if dag is not None:
                 print(f"[planner] 输出DAG: {json.dumps(dag, ensure_ascii=False)}", flush=True)
                 return dag
-            print(f"[planner]: {result.content}\n", flush=True)
+            print(
+                f"[planner]: content={result.content!r} "
+                f"tool_calls={[tc['function']['name'] for tc in result.tool_calls]}",
+                flush=True,
+            )
         # 兜底:从最后一条文本里尝试解析 DAG
         content = messages[-1].get("content") or ""
         start, end = content.find("{"), content.rfind("}")
