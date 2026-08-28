@@ -33,9 +33,10 @@ class VLAExecutorNode(Node):
         self.declare_parameter("server_url", "http://127.0.0.1:8767")
         self.declare_parameter("request_timeout_sec", 60.0)
         self.declare_parameter("heartbeat_rate_hz", 1.0)
-        # 静态绑定 /nova/env/* 的相机/state 键,必须与运行中的 env 一致(robocasa groot fork)
+        # 静态绑定 /nova/env/* 的相机/state 键,必须与运行中的 env 一致(robocasa groot fork)。
+        # state_keys 顺序 = 模型训练时 groot_openpi_dataset 的 state 拼接顺序(eef 在前,base 在后)
         self.declare_parameter("camera_names", ["robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand"])
-        self.declare_parameter("state_keys", ["body.base_position", "body.base_rotation", "body.end_effector_position_relative", "body.end_effector_rotation_relative", "hand.gripper_qpos"])
+        self.declare_parameter("state_keys", ["body.end_effector_position_relative", "body.end_effector_rotation_relative", "body.base_position", "body.base_rotation", "hand.gripper_qpos"])
         self.declare_parameter("default_duration_sec", 10.0)
 
         self.server_url = str(self.get_parameter("server_url").value)
