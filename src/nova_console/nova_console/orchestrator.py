@@ -44,7 +44,15 @@ class Orchestrator:
                 pass
 
     def _on_session_output(self, sess: Session, text: str) -> None:
-        self._emit({"type": "session_output", "id": sess.id, "name": sess.name, "data": text})
+        self._emit(
+            {
+                "type": "session_output",
+                "id": sess.id,
+                "name": sess.name,
+                "data": text,
+                "seq": sess._out_seq,
+            }
+        )
 
     # 会话是否已就绪:ready / 无 wait_for 的 running / 正常退出(exit 0)
     @staticmethod

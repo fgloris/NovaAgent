@@ -89,7 +89,32 @@ class AgentLoop:
                 self._handle(task_id, instruction)
             except Exception as exc:
                 self._emit(task_id, "failed", f"agent loop 异常: {exc}", True)
+
+    def _repair_history(self) -> None:
+        # 上一任务若因 finish 提前返回,可能留下"assistant 带 tool_calls 却缺 tool 响应"的畸形历史,
+        # 下一任务第一次调 LLM 就会被 400 拒绝;这里补齐占位响应,保证每条 tool_call 都有应答。
+        for i in range(len(self.messages) - 1, -1, -1):
+            msg = self.messages[i]
+            if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+                continue
+            answered = {
+                m.get("tool_call_id")
+                for m in self.messages[i + 1:]
+                if m.get("role") == "tool"
+            }
+            for tc in msg["tool_calls"]:
+                if tc.get("id") not in answered:
+                    self.messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": "该工具调用未执行(finish 或历史遗留)",
+                        }
+                    )
+            break
+
     def _handle(self, task_id: str, instruction: str) -> None:
+        self._repair_history()
         skill_index = self.skills.index_text()
         descriptors = self.adapter.fetch_tools()
         tools_text = "\n".join(f"- {d.name}: {d.description}" for d in descriptors)
@@ -129,6 +154,10 @@ class AgentLoop:
                 name = tc["function"]["name"]
                 args = self._parse_args(tc)
                 if name == "finish":
+                    # 也必须补 tool 响应,保持历史完整(否则下个任务会 400)
+                    self.messages.append(
+                        {"role": "tool", "tool_call_id": tc["id"], "content": "finished"}
+                    )
                     self._emit(task_id, "done", args.get("summary", ""), True, kind="status")
                     return
                 args_text = json.dumps(args, ensure_ascii=False)
@@ -142,8 +171,8 @@ class AgentLoop:
                         return
                 else:
                     fails = 0
-                self._emit(task_id, "working", f"{name} -> {content[:200]}", False, kind="tool_result")
                 self.messages.append({"role": "tool", "tool_call_id": tc["id"], "content": content})
+                self._emit(task_id, "working", f"{name} -> {content[:200]}", False, kind="tool_result")
         self._emit(task_id, "failed", f"超过单任务最大步数 {MAX_STEPS_PER_TASK}", True, kind="status")
 
     def _run_tool(self, name: str, args: dict, task_id: str) -> str:

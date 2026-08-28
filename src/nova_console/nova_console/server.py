@@ -23,7 +23,26 @@ from nova_interfaces.srv import RunTask
 from nova_console.orchestrator import Orchestrator
 
 CHAT_HISTORY_LIMIT = 200
-WEB_DIR = Path(__file__).resolve().parent / "web"
+
+
+def find_web_dir() -> Path:
+    # 源码/--symlink-install:web/ 在包目录里;普通 install:web/ 在 share/nova_console/web
+    here = Path(__file__).resolve().parent
+    for cand in (here / "web",):
+        if cand.exists():
+            return cand
+    try:
+        from ament_index_python.packages import get_package_share_directory
+
+        cand = Path(get_package_share_directory("nova_console")) / "web"
+        if cand.exists():
+            return cand
+    except Exception:
+        pass
+    raise RuntimeError("找不到 nova_console 的 web 前端目录(重新 colcon build 或加 --symlink-install)")
+
+
+WEB_DIR = find_web_dir()
 
 
 class ConsoleRosNode(Node):
@@ -126,6 +145,15 @@ def create_app(orch: Orchestrator, ros: ConsoleRosNode | None, event_queue: queu
     @app.get("/api/sessions")
     def get_sessions():
         return {"sessions": orch.list_sessions()}
+
+    @app.get("/api/sessions/{sid}/out")
+    def session_out(sid: str, after: int = 0):
+        # 增量输出:返回 after 之后的新输出,前端 WS 断连时轮询兜底
+        sess = orch.sessions.get(sid)
+        if sess is None:
+            return {"ok": False, "error": "未知会话"}
+        seq, data = sess.output_since(after)
+        return {"ok": True, "seq": seq, "data": data}
 
     @app.post("/api/sessions/{sid}/stop")
     def stop_session(sid: str):

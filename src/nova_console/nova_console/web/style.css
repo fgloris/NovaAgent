@@ -8,6 +8,7 @@ body { font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; backgroun
 .conn { font-size: 12px; margin-left: auto; }
 .conn.on { color: #6fcf97; }
 .conn.off { color: #eb5757; }
+.conn.poll { color: #e6c07b; }
 
 #body { position: fixed; top: 46px; left: 0; right: 0; bottom: 0; display: flex; }
 

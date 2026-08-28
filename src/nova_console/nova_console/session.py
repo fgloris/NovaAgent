@@ -53,6 +53,11 @@ class Session:
         self._ring_lock = threading.Lock()
         self._reader_thread: threading.Thread | None = None
 
+        # 增量输出缓冲:每条输出块带自增 seq,前端可"从 after 之后拉取"(WS 断连时轮询兜底)
+        self._out_seq = 0
+        self._outs: deque = deque()
+        self._outs_len = 0
+
     # ---------- 事件 ----------
     def on_output(self, fn) -> None:
         self._readers.append(fn)
@@ -87,9 +92,21 @@ class Session:
             self._ring_len += len(data)
             while self._ring_len > RING_LIMIT and self._ring:
                 self._ring_len -= len(self._ring.popleft())
+            self._out_seq += 1
+            self._outs.append((self._out_seq, text))
+            self._outs_len += len(data)
+            while self._outs_len > RING_LIMIT and len(self._outs) > 1:
+                _, dropped = self._outs.popleft()
+                self._outs_len -= len(dropped.encode("utf-8", "replace"))
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write(text)
         self._notify_output(text)
+
+    # 返回 (当前 seq, after 之后的新输出拼接);客户端用返回的 seq 继续轮询
+    def output_since(self, after: int) -> tuple[int, str]:
+        with self._ring_lock:
+            parts = [t for s, t in self._outs if s > after]
+            return self._out_seq, "".join(parts)
 
     def _read_loop(self) -> None:
         proc = self.proc
@@ -197,6 +214,9 @@ class Session:
         with self._ring_lock:
             self._ring.clear()
             self._ring_len = 0
+            self._out_seq = 0
+            self._outs.clear()
+            self._outs_len = 0
         self.exit_code = None
         try:
             self.log_file.write_text("", encoding="utf-8")
@@ -214,5 +234,6 @@ class Session:
             "status": self.status,
             "exit_code": self.exit_code,
             "depends_on": self.depends_on,
+            "out_seq": self._out_seq,
             "tail": text[-4000:],
         }

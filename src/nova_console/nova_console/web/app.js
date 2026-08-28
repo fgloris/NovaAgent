@@ -1,13 +1,17 @@
-/* NovaAgent Console 前端:会话侧边栏 + xterm 终端 + 聊天面板。 */
+/* NovaAgent Console 前端:会话侧边栏 + xterm 终端 + 聊天面板。
+ * 输出/状态优先走 WS;WS 断连时自动切 REST 轮询兜底(增量 out_seq),保证输出始终可见。 */
 "use strict";
 
 const state = {
   profiles: [],
   activeProfile: null,
-  sessions: {},   // sid -> {id,name,status,exit_code,depends_on}
+  sessions: {},   // sid -> {id,name,status,exit_code,depends_on,out_seq}
   current: null,  // 当前选中的 sid
   terminals: {},  // sid -> {term, fit}
+  outSeq: {},     // sid -> 已写入的最新输出 seq
   ws: null,
+  pollTimer: null,
+  keepTimer: null,
   chatSeq: 0,
 };
 
@@ -21,6 +25,12 @@ function esc(s) {
   const d = document.createElement("div");
   d.textContent = s;
   return d.innerHTML;
+}
+
+function setConn(cls) {
+  const el = document.getElementById("conn");
+  el.className = "conn " + cls;
+  el.textContent = { on: "已连接", off: "未连接", poll: "未连接(轮询中)", conn: "连接中…" }[cls] || cls;
 }
 
 /* ---------------- 会话侧边栏 ---------------- */
@@ -68,7 +78,7 @@ function getTerm(sid) {
         }).catch(() => {});
       }
     });
-    state.terminals[sid] = { term, fit };
+    state.terminals[sid] = { term, fit, fresh: true };
   }
   return state.terminals[sid];
 }
@@ -141,6 +151,7 @@ async function refreshProfiles() {
   if (state.activeProfile) sel.value = state.activeProfile;
 }
 
+// 初次加载:写入各会话 tail 快照,并记录基线 out_seq
 async function refreshSessions() {
   const r = await api("/api/sessions");
   const s = r.sessions || [];
@@ -151,14 +162,63 @@ async function refreshSessions() {
       const el = document.querySelector(`.terminal[data-sid="${sid}"]`);
       if (el) el.remove();
       delete state.terminals[sid];
+      delete state.outSeq[sid];
     }
   });
   s.forEach(x => {
     const t = getTerm(x.id);
-    if (x.tail) t.term.write(x.tail);
+    if (t.fresh) {
+      t.fresh = false;
+      if (x.tail) t.term.write(x.tail);
+    }
+    if (state.outSeq[x.id] === undefined) state.outSeq[x.id] = x.out_seq || 0;
   });
   if (!state.current && s.length) selectSession(s[0].id);
   renderSessions();
+}
+
+// WS 断连时的轮询兜底:状态 + 增量输出
+async function pollSessions() {
+  let list;
+  try {
+    const r = await api("/api/sessions");
+    list = r.sessions || [];
+  } catch (e) { return; }
+  list.forEach(x => {
+    state.sessions[x.id] = x;
+    // 重启后 out_seq 归零:清掉旧终端,从 0 重新累积
+    if (state.outSeq[x.id] !== undefined && x.out_seq < state.outSeq[x.id]) {
+      delete state.outSeq[x.id];
+      if (state.terminals[x.id]) state.terminals[x.id].term.reset();
+    }
+    const after = state.outSeq[x.id] === undefined ? 0 : state.outSeq[x.id];
+    api(`/api/sessions/${x.id}/out?after=${after}`).then(res => {
+      if (res && res.ok) {
+        if (res.data) writeOutput(x.id, res.data);
+        state.outSeq[x.id] = res.seq;
+      }
+    }).catch(() => {});
+  });
+  Object.keys(state.terminals).forEach(sid => {
+    if (!state.sessions[sid]) {
+      const el = document.querySelector(`.terminal[data-sid="${sid}"]`);
+      if (el) el.remove();
+      delete state.terminals[sid];
+      delete state.outSeq[sid];
+    }
+  });
+  if (!state.current && list.length) selectSession(list[0].id);
+  renderSessions();
+}
+
+function startPolling() {
+  if (state.pollTimer) return;
+  state.pollTimer = setInterval(pollSessions, 1000);
+  setConn("poll");
+}
+
+function stopPolling() {
+  if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
 }
 
 async function doStartProfile() {
@@ -181,17 +241,29 @@ async function doRestart(sid) { await api(`/api/sessions/${sid}/restart`, { meth
 /* ---------------- WebSocket ---------------- */
 function connectWS() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  state.ws = new WebSocket(`${proto}://${location.host}/ws`);
-  state.ws.onopen = () => document.getElementById("conn").className = "conn on";
-  state.ws.onclose = () => {
-    document.getElementById("conn").className = "conn off";
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  state.ws = ws;
+  ws.onopen = () => { stopPolling(); setConn("on"); };
+  ws.onclose = (ev) => {
+    if (state.ws !== ws) return;
+    setConn("off");
+    if (ev.code && ev.code !== 1000) console.error("WS 关闭:", ev.code, ev.reason);
+    startPolling();       // WS 挂了 -> 轮询兜底
     setTimeout(connectWS, 1500);
   };
-  state.ws.onmessage = (ev) => {
+  ws.onerror = () => console.error("WS 连接错误(若反复出现,可能是代理拦截了 ws:// 或 CDN 未加载)");
+  ws.onmessage = (ev) => {
     let m;
     try { m = JSON.parse(ev.data); } catch (e) { return; }
-    if (m.type === "session_output") writeOutput(m.id, m.data);
-    else if (m.type === "session_status") {
+    if (m.type === "session_output") {
+      writeOutput(m.id, m.data);
+      if (typeof m.seq === "number") state.outSeq[m.id] = m.seq;
+    } else if (m.type === "session_status") {
+      if (m.status === "stopped" || m.status === "starting") {
+        // 重启后输出从零开始
+        delete state.outSeq[m.id];
+        if (state.terminals[m.id]) state.terminals[m.id].term.reset();
+      }
       if (state.sessions[m.id]) {
         state.sessions[m.id].status = m.status;
         state.sessions[m.id].exit_code = m.exit_code;
@@ -201,7 +273,8 @@ function connectWS() {
       renderSessions();
     } else if (m.type === "chat") appendChat(m);
   };
-  const keep = setInterval(() => {
+  if (state.keepTimer) clearInterval(state.keepTimer);
+  state.keepTimer = setInterval(() => {
     if (state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.send("ping");
   }, 25000);
 }
