@@ -18,12 +18,11 @@ profiles:
 
       - id: pi0
         name: pi0 server
-        depends_on: [sim]
         venv: ~/data1/lxy/openpi/.venv
         workdir: ~/data1/lxy/NovaAgent
         command: python3 src/nova_vla_executor/nova_vla_executor/pi0_server.py
         wait_for: "Application startup complete"
-        wait_timeout_sec: 120
+        wait_timeout_sec: 300
 
       - id: bridge
         name: robocasa bridge
