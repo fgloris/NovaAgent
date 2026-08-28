@@ -2,6 +2,7 @@
 # 按 providers 顺序尝试调用,失败自动回退下一个 provider。
 import json
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -48,6 +49,24 @@ class LLMClient:
         if provider.get("kind") == "anthropic":
             return self._chat_anthropic(provider, messages, tools, temperature, max_tokens)
         return self._chat_openai(provider, messages, tools, temperature, max_tokens)
+
+    # 逐个 provider 发一条最小 chat,测连接延迟;返回 [{name, ok, latency_ms} 或 {name, ok, error}]
+    def ping(self, max_tokens: int = 8) -> list[dict]:
+        results = []
+        for provider in self.providers:
+            t0 = time.time()
+            try:
+                self._chat_one(provider, [{"role": "user", "content": "ping"}], None, 0.0, max_tokens)
+                results.append(
+                    {
+                        "name": provider.get("name"),
+                        "ok": True,
+                        "latency_ms": round((time.time() - t0) * 1000),
+                    }
+                )
+            except Exception as exc:
+                results.append({"name": provider.get("name"), "ok": False, "error": str(exc)[:200]})
+        return results
 
     def _chat_openai(self, provider, messages, tools, temperature, max_tokens) -> ChatResult:
         url = provider["base_url"].rstrip("/") + "/chat/completions"

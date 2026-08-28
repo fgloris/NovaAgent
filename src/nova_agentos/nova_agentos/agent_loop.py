@@ -56,9 +56,9 @@ class AgentLoop:
         llm: LLMClient,
         skills: SkillStore,
         adapter: McpAdapter,
-        on_state: Callable[[str, str, str, bool], None] | None = None,
+        on_state: Callable[[str, str, str, bool, str], None] | None = None,
     ) -> None:
-        # on_state(task_id, status, message, done):任务状态回调,由调用方发布到话题
+        # on_state(task_id, status, message, done, kind):任务消息回调,由调用方发布到话题
         self.llm = llm
         self.skills = skills
         self.adapter = adapter
@@ -89,7 +89,6 @@ class AgentLoop:
                 self._handle(task_id, instruction)
             except Exception as exc:
                 self._emit(task_id, "failed", f"agent loop 异常: {exc}", True)
-
     def _handle(self, task_id: str, instruction: str) -> None:
         skill_index = self.skills.index_text()
         descriptors = self.adapter.fetch_tools()
@@ -100,7 +99,7 @@ class AgentLoop:
             f"用户指令: {instruction}"
         )
         self.messages.append({"role": "user", "content": context})
-        self._emit(task_id, "working", "", False)
+        self._emit(task_id, "working", f"收到指令: {instruction}", False, kind="status")
         tools = [LOAD_SKILL_TOOL, FINISH_TOOL] + to_llm_tools(descriptors)
 
         fails = 0
@@ -119,27 +118,33 @@ class AgentLoop:
                     "tool_calls": result.tool_calls,
                 }
             )
+            if result.content:
+                # 规划消息:模型每轮的文本(思考/说明),发布给 UI
+                self._emit(task_id, "working", result.content, False, kind="text")
             if not result.tool_calls:
                 # 纯文本回复:等待用户下一条消息,上下文保留
-                self._emit(task_id, "working", result.content or "", False)
+                self._emit(task_id, "working", result.content or "", False, kind="text")
                 return
             for tc in result.tool_calls:
                 name = tc["function"]["name"]
                 args = self._parse_args(tc)
                 if name == "finish":
-                    self._emit(task_id, "done", args.get("summary", ""), True)
+                    self._emit(task_id, "done", args.get("summary", ""), True, kind="status")
                     return
+                args_text = json.dumps(args, ensure_ascii=False)
+                self._emit(task_id, "working", f"调用 {name}: {args_text}", False, kind="tool_call")
                 content = self._run_tool(name, args, task_id)
                 print(f"[agent_loop] task={task_id} tool={name} result={content[:200]}", flush=True)
                 if content.startswith("工具执行失败"):
                     fails += 1
                     if fails >= MAX_TOOL_FAILS:
-                        self._emit(task_id, "failed", f"工具连续失败 {fails} 次: {content}", True)
+                        self._emit(task_id, "failed", f"工具连续失败 {fails} 次: {content}", True, kind="status")
                         return
                 else:
                     fails = 0
+                self._emit(task_id, "working", f"{name} -> {content[:200]}", False, kind="tool_result")
                 self.messages.append({"role": "tool", "tool_call_id": tc["id"], "content": content})
-        self._emit(task_id, "failed", f"超过单任务最大步数 {MAX_STEPS_PER_TASK}", True)
+        self._emit(task_id, "failed", f"超过单任务最大步数 {MAX_STEPS_PER_TASK}", True, kind="status")
 
     def _run_tool(self, name: str, args: dict, task_id: str) -> str:
         try:
@@ -159,6 +164,6 @@ class AgentLoop:
         except json.JSONDecodeError:
             return {}
 
-    def _emit(self, task_id: str, status: str, message: str, done: bool) -> None:
+    def _emit(self, task_id: str, status: str, message: str, done: bool, kind: str = "status") -> None:
         if self.on_state:
-            self.on_state(task_id, status, message, done)
+            self.on_state(task_id, status, message, done, kind)

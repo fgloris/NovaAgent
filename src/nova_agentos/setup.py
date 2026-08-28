@@ -27,6 +27,7 @@ setup(
     entry_points={
         "console_scripts": [
             "nova_agentos_node = nova_agentos.agentos_node:main",
+            "nova_agentos_cli = nova_agentos.agent_cli:main",
         ],
     },
 )
