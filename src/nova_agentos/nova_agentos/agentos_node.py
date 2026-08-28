@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 
 import rclpy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.node import Node
 
 from nova_common.llm_client import LLMClient
@@ -46,14 +47,16 @@ class AgentosNode(Node):
         self.dag_executor = DagExecutor(self.adapter)
         self.state_pub = self.create_publisher(TaskState, "/nova/agentos/task_state", 10)
 
+        # 独立 callback group:run 回调内同步等待响应,避免与默认组互斥卡死
+        self._client_cg = MutuallyExclusiveCallbackGroup()
         self._map_client = self.create_client(
-            MapTopics, str(self.get_parameter("map_topics_service").value)
+            MapTopics, str(self.get_parameter("map_topics_service").value), callback_group=self._client_cg
         )
         self._unmap_client = self.create_client(
-            UnmapTopics, str(self.get_parameter("unmap_topics_service").value)
+            UnmapTopics, str(self.get_parameter("unmap_topics_service").value), callback_group=self._client_cg
         )
         self._env_info_client = self.create_client(
-            EnvInfo, str(self.get_parameter("env_info_service").value)
+            EnvInfo, str(self.get_parameter("env_info_service").value), callback_group=self._client_cg
         )
 
         self._bindings: dict[str, dict] = {}

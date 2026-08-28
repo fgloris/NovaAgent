@@ -5,6 +5,7 @@ import time
 
 import rclpy
 from rclpy.action import ActionClient, ActionServer
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.node import Node
 
 from nova_interfaces.action import MCPExecute
@@ -25,6 +26,8 @@ class ExecutorManagerNode(Node):
         # tool_name -> {"desc": ToolDescriptor, "executor": str, "last_seen": float}
         self._registry: dict[str, dict] = {}
         self._clients: dict[str, ActionClient] = {}
+        # 独立 callback group:execute 回调内同步等待转发结果,避免与默认组互斥卡死
+        self._fwd_cg = MutuallyExclusiveCallbackGroup()
 
         self.create_subscription(ExecutorHeartbeat, HEARTBEAT_TOPIC, self._on_heartbeat, 10)
         self.create_service(
@@ -62,7 +65,7 @@ class ExecutorManagerNode(Node):
     def _get_client(self, action_server_name: str) -> ActionClient:
         client = self._clients.get(action_server_name)
         if client is None:
-            client = ActionClient(self, MCPExecute, action_server_name)
+            client = ActionClient(self, MCPExecute, action_server_name, callback_group=self._fwd_cg)
             self._clients[action_server_name] = client
         return client
 

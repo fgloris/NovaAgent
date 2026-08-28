@@ -5,6 +5,7 @@ import json
 
 import rclpy
 from rclpy.action import ActionClient
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.node import Node
 
 from nova_interfaces.action import MCPExecute
@@ -31,8 +32,10 @@ def to_llm_tools(descriptors: list) -> list[dict]:
 class McpAdapter:
     def __init__(self, node: Node, list_tools_srv: str, execute_action: str) -> None:
         self.node = node
-        self._list = node.create_client(ListTools, list_tools_srv)
-        self._client = ActionClient(node, MCPExecute, execute_action)
+        # 独立 callback group:回调内同步等待响应时不会被默认组占用而卡死
+        cg = MutuallyExclusiveCallbackGroup()
+        self._list = node.create_client(ListTools, list_tools_srv, callback_group=cg)
+        self._client = ActionClient(node, MCPExecute, execute_action, callback_group=cg)
 
     def fetch_tools(self, timeout_sec: float = 10.0) -> list:
         if not self._list.wait_for_service(timeout_sec=timeout_sec):
