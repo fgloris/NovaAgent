@@ -79,6 +79,7 @@ class AgentosNode(Node):
             graph = self.planner.plan(instruction, tools_text)
             validate(graph, [d.name for d in descriptors])
             plan_json = json.dumps(graph, ensure_ascii=False)
+            self.get_logger().info(f"LLM DAG: {plan_json}")
             self._publish_state(task_id, instruction, "executing", plan_json)
             self._env_info = self._fetch_env_info()
 
@@ -158,8 +159,7 @@ class AgentosNode(Node):
             cameras = (self._env_info.get("obs_spec") or {}).get("cameras") or {}
         cam_bindings = bindings.get("cameras") or []
         if cam_bindings:
-            # env_info 可用时取交集(过滤仿真不存在的相机);不可用则按 bindings 全量 map
-            cam_selected = [c for c in cam_bindings if not cameras or c in cameras]
+            cam_selected = [c for c in cam_bindings if c in cameras]
         else:
             cam_selected = list(cameras.keys())
         for cam in cam_selected:
