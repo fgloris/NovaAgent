@@ -136,8 +136,8 @@ class VLAExecutorNode(Node):
         infer_times: list[float] = []
         dim = buf["dim"]
         while time.time() - start < self.default_duration:
-            if (buf["doc"] or {}).get("success"):
-                break
+            #if (buf["doc"] or {}).get("success"):
+            #    break
             if n_exec >= self.max_env_steps:
                 break
             if buf["step"] is None or buf["step"] == last_step:
