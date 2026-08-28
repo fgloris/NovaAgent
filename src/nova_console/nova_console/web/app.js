@@ -51,6 +51,18 @@ function fmt(v) {
   return String(v);
 }
 
+function sessionBanner(s) {
+  const lines = [
+    `session: ${s.name || s.id} (${s.id})`,
+    `command: ${s.script || s.command || "-"}`,
+  ];
+  if (s.workdir) lines.push(`workdir: ${s.workdir}`);
+  if (s.venv) lines.push(`venv: ${s.venv}`);
+  if (s.depends_on && s.depends_on.length) lines.push(`depends_on: ${s.depends_on.join(", ")}`);
+  if (s.wait_for) lines.push(`ready_when: ${s.wait_for}`);
+  return `\x1b[38;5;110m${lines.map(x => "# " + x).join("\r\n")}\x1b[0m\r\n\r\n`;
+}
+
 function renderSessions() {
   const list = document.getElementById("session-list");
   list.innerHTML = "";
@@ -64,7 +76,7 @@ function renderSessions() {
         <span class="name">${esc(s.name)}</span>
         <span class="status">${esc(statusText(s.status))}</span>
       </div>
-      <div class="sess-command">${esc(s.command || s.script || "")}</div>
+      <div class="sess-command">${esc(s.script || s.command || "")}</div>
       <div class="sess-foot">
         <span>${esc(s.id)}</span>
         <span>${state.unread[s.id] ? "+" + state.unread[s.id] + " 输出" : (s.exit_code === null || s.exit_code === undefined ? "" : "exit " + esc(s.exit_code))}</span>
@@ -105,6 +117,14 @@ function getTerm(sid) {
     state.terminals[sid] = { term, fit, fresh: true };
   }
   return state.terminals[sid];
+}
+
+function resetTermWithSnapshot(s) {
+  const t = getTerm(s.id);
+  t.term.reset();
+  t.term.write(sessionBanner(s));
+  if (s.tail) t.term.write(s.tail);
+  t.fresh = false;
 }
 
 function selectSession(sid) {
@@ -223,10 +243,7 @@ async function refreshSessions() {
   });
   s.forEach(x => {
     const t = getTerm(x.id);
-    if (t.fresh) {
-      t.fresh = false;
-      if (x.tail) t.term.write(x.tail);
-    }
+    if (t.fresh) resetTermWithSnapshot(x);
     if (state.outSeq[x.id] === undefined) state.outSeq[x.id] = x.out_seq || 0;
   });
   if (state.current && !state.sessions[state.current]) state.current = null;
@@ -325,9 +342,13 @@ function connectWS() {
         // 重启后输出从零开始
         delete state.outSeq[m.id];
         state.unread[m.id] = 0;
-        if (state.terminals[m.id]) state.terminals[m.id].term.reset();
       }
       state.sessions[m.id] = { ...(state.sessions[m.id] || {}), ...m };
+      if (m.status === "starting" && state.terminals[m.id]) {
+        resetTermWithSnapshot(state.sessions[m.id]);
+      } else if (m.status === "stopped" && state.terminals[m.id]) {
+        state.terminals[m.id].term.reset();
+      }
       renderSessions();
     } else if (m.type === "chat") appendChat(m);
   };
