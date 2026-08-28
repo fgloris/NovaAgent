@@ -43,7 +43,7 @@ class AgentosNode(Node):
             list_tools_srv=str(self.get_parameter("list_tools_service").value),
             execute_action=str(self.get_parameter("execute_action").value),
         )
-        self.executor = DagExecutor(self.adapter)
+        self.dag_executor = DagExecutor(self.adapter)
         self.state_pub = self.create_publisher(TaskState, "/nova/agentos/task_state", 10)
 
         self._map_client = self.create_client(
@@ -103,7 +103,7 @@ class AgentosNode(Node):
                     self._call_unmap_topics(mapping_id)
                     self._active_mappings.pop(mapping_id, None)
 
-            self.executor.execute(
+            self.dag_executor.execute(
                 graph,
                 task_id,
                 on_step=on_step,
