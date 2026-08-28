@@ -11,5 +11,6 @@ nova_vla_executor:
     # 策略执行:一次预测后连续执行 replan_steps 个环境步再重规划(官方评测为 5)。
     replan_steps: 5
     # 结束条件:success / 墙钟达到 default_duration_sec / 已执行环境步数达到 max_env_steps,三者任一先到。
-    default_duration_sec: 30.0
+    # 推理约 4.5s/次,慢放模式下墙钟上限要留足,否则 30s 只够几十个仿真步。
+    default_duration_sec: 600.0
     max_env_steps: 200

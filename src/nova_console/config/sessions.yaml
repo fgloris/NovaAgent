@@ -31,7 +31,7 @@ profiles:
         depends_on: [sim]
         pre: ["source ~/data1/lxy/env.sh && source ~/data1/lxy/NovaAgent/install/setup.sh"]
         workdir: ~/data1/lxy/NovaAgent
-        command: ros2 run nova_robocasa_bridge robocasa_bridge_node
+        command: ros2 run nova_robocasa_bridge robocasa_bridge_node --ros-args -p publish_rate_hz:=1.1
 
       - id: agentos
         name: AgentOS

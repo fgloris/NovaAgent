@@ -147,6 +147,11 @@ class VLAExecutorNode(Node):
             last_step = buf["step"]
             # chunk 耗尽才重新推理;一次预测后连续执行 replan_steps 步
             if chunk is None or chunk_idx >= chunk.shape[0]:
+                # 重规划前先发零动作:推理期间 bridge 用零动作步进,机器人保持静止,
+                # 否则会拿上一 chunk 最后一步重复步进导致 overshoot
+                if chunk is not None and dim:
+                    self._publish_action(np.zeros(dim, dtype=np.float32))
+                    n_exec += 1
                 try:
                     state = self._build_state_vector(buf)
                     t0 = time.perf_counter()
@@ -171,9 +176,7 @@ class VLAExecutorNode(Node):
                     self.get_logger().error(f"远程推理失败: {exc}")
                     continue
             try:
-                msg = Float32MultiArray()
-                msg.data = chunk[chunk_idx].tolist()
-                self._action_pub.publish(msg)
+                self._publish_action(chunk[chunk_idx])
                 chunk_idx += 1
                 n_exec += 1
             except Exception as exc:
@@ -189,6 +192,11 @@ class VLAExecutorNode(Node):
             "avg_infer_ms": round(avg_infer_ms, 1),
             "replan_steps": self.replan_steps,
         }
+
+    def _publish_action(self, values) -> None:
+        msg = Float32MultiArray()
+        msg.data = np.asarray(values, dtype=np.float32).tolist()
+        self._action_pub.publish(msg)
 
     # 按 state_keys 从 obs JSON 的 state 摘取并拼接 state 向量;键缺失则跳过
     def _build_state_vector(self, buf: dict) -> np.ndarray | None:
