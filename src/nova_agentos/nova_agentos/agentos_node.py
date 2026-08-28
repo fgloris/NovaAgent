@@ -90,8 +90,8 @@ class AgentosNode(Node):
                 if not bindings:
                     return None
                 mapping_id = f"{task_id}_{nid}"
-                # ROS 2 topic 名不允许冒号,命名空间里用下划线代替
-                ns = f"/nova/session/{mapping_id}".replace(":", "_")
+                # ROS 2 topic 名不允许冒号,也不允许 token 以数字开头,
+                ns = f"/nova/session/s_{mapping_id}"
                 src, dst, types = self._build_mapping(ns, bindings)
                 if not src:
                     return None
