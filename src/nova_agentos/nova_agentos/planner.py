@@ -93,9 +93,9 @@ class Planner:
             result = self.llm.chat(messages, tools=[PLAN_TOOL, LOAD_SKILL_TOOL])
             dag = self._step(messages, result)
             if dag is not None:
-                print(f"[planner] 第{round_no}轮 submit_dag,最终 DAG: {json.dumps(dag, ensure_ascii=False)}", flush=True)
+                print(f"[planner] 输出DAG: {json.dumps(dag, ensure_ascii=False)}", flush=True)
                 return dag
-            print(f"[planner] 第{round_no}轮无 submit_dag: {result.content[:200]}", flush=True)
+            print(f"[planner]: {result.content}\n", flush=True)
         # 兜底:从最后一条文本里尝试解析 DAG
         content = messages[-1].get("content") or ""
         start, end = content.find("{"), content.rfind("}")
