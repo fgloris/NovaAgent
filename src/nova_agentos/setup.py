@@ -27,7 +27,6 @@ setup(
     entry_points={
         "console_scripts": [
             "nova_agentos_node = nova_agentos.agentos_node:main",
-            "nova_agentos_topic_router = nova_agentos.topic_router:main",
         ],
     },
 )

@@ -14,19 +14,12 @@ find_package(action_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/DAGNode.msg"
-  "msg/TaskGraph.msg"
   "msg/ToolDescriptor.msg"
   "msg/ExecutorHeartbeat.msg"
-  "msg/SkillInfo.msg"
-  "msg/SkillCommand.msg"
-  "msg/SkillResult.msg"
   "msg/TaskState.msg"
   "srv/ListTools.srv"
   "srv/RunTask.srv"
   "srv/EnvInfo.srv"
-  "srv/MapTopics.srv"
-  "srv/UnmapTopics.srv"
   "action/MCPExecute.action"
   DEPENDENCIES builtin_interfaces action_msgs
 )

@@ -6,17 +6,15 @@ NovaAgent 共享的 ROS 2 消息/服务/动作接口定义(ament_cmake 包)。
 
 | 名称 | 说明 |
 | --- | --- |
-| `DAGNode` | 任务图节点,每个节点 = 一次工具调用(`id, type, tool_name, params_json, depends_on, goal`) |
-| `TaskGraph` | 格式化后的任务 DAG 图 |
 | `ToolDescriptor` | 一个 MCP 工具的能力描述(`name, description, params_schema_json, action_server_name`) |
 | `ExecutorHeartbeat` | executor 周期发布的心跳,供 manager 自动发现/剔除 |
-| `SkillInfo` / `SkillCommand` / `SkillResult` | skill 元数据与执行命令/结果 |
-| `TaskState` | 任务执行状态(`planning/executing/done/failed`) |
+| `TaskState` | 任务状态(`working/done/failed` + `done` 标志 + 最后 message) |
 
 ## 服务 (srv)
 
 - `ListTools`:查询 executor_manager 当前全部可用工具。
-- `RunTask`:提交一条任务指令给 agentos(阻塞直到执行完成)。
+- `RunTask`:提交一条用户指令给 agentos(入队后立即返回 task_id,状态经 `/nova/agentos/task_state/t_{task_id}` 观察)。
+- `EnvInfo`:查询仿真环境完整规格(`action_spec/obs_spec/cameras`),供手动诊断。
 
 ## 动作 (action)
 

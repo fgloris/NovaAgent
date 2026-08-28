@@ -1,0 +1,158 @@
+# agent 循环:后台线程消费用户消息队列,上下文跨任务持久累积。
+# 每轮让 LLM 发出函数调用(executor 工具 / load_skill / finish),执行后回填上下文继续;
+# 直到 LLM 调 finish 完成任务,或只发纯文本(视为等待用户输入)。
+# 不再有 DAG:单函数调用 = 一步执行,模型根据上一步结果决定下一步(闭环)。
+import json
+import queue
+import threading
+from typing import Callable
+
+from nova_common.llm_client import LLMClient
+
+from nova_agentos.mcp_adapter import McpAdapter, to_llm_tools
+from nova_agentos.skill_store import SkillStore
+
+# 单任务最大步数,防止模型一直调用工具不结束
+MAX_STEPS_PER_TASK = 20
+# 工具连续失败次数上限,超过则放弃当前任务
+MAX_TOOL_FAILS = 3
+
+SYSTEM_BASE = (
+    "你是具身机器人 NovaAgent 的 agent。你的任务:理解用户指令,通过调用工具逐步执行,"
+    "每次调用一个工具,根据工具返回结果决定下一步,直到任务完成。"
+    "需要领域经验时先调用 load_skill 加载;任务完成时必须调用 finish 并给出总结。"
+    "注意对话上下文会跨任务保留,之前做过的任务与结果可以复用。"
+)
+
+FINISH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "finish",
+        "description": "宣告当前任务完成,给出最终总结",
+        "parameters": {
+            "type": "object",
+            "properties": {"summary": {"type": "string", "description": "任务完成总结"}},
+            "required": ["summary"],
+        },
+    },
+}
+
+LOAD_SKILL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "load_skill",
+        "description": "加载指定 skill 的领域经验正文(名称只能来自 skill 索引),结果注入你的上下文",
+        "parameters": {
+            "type": "object",
+            "properties": {"skill": {"type": "string", "description": "skill 名称"}},
+            "required": ["skill"],
+        },
+    },
+}
+
+
+class AgentLoop:
+    def __init__(
+        self,
+        llm: LLMClient,
+        skills: SkillStore,
+        adapter: McpAdapter,
+        on_state: Callable[[str, str, str, bool], None] | None = None,
+    ) -> None:
+        # on_state(task_id, status, message, done):任务状态回调,由调用方发布到话题
+        self.llm = llm
+        self.skills = skills
+        self.adapter = adapter
+        self.on_state = on_state
+        self.messages: list[dict] = [{"role": "system", "content": SYSTEM_BASE}]
+        self.queue: queue.Queue = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._running = False
+
+    def start(self) -> None:
+        self._running = True
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+        self.queue.put((None, None))
+
+    def submit(self, task_id: str, instruction: str) -> None:
+        self.queue.put((task_id, instruction))
+
+    def _run(self) -> None:
+        while self._running:
+            task_id, instruction = self.queue.get()
+            if instruction is None:
+                break
+            try:
+                self._handle(task_id, instruction)
+            except Exception as exc:
+                self._emit(task_id, "failed", f"agent loop 异常: {exc}", True)
+
+    def _handle(self, task_id: str, instruction: str) -> None:
+        skill_index = self.skills.index_text()
+        descriptors = self.adapter.fetch_tools()
+        tools_text = "\n".join(f"- {d.name}: {d.description}" for d in descriptors)
+        context = (
+            f"# 当前可用 skill 索引\n{skill_index or '(无)'}\n\n"
+            f"# 当前可用工具\n{tools_text or '(无)'}\n\n"
+            f"用户指令: {instruction}"
+        )
+        self.messages.append({"role": "user", "content": context})
+        self._emit(task_id, "working", "", False)
+        tools = [LOAD_SKILL_TOOL, FINISH_TOOL] + to_llm_tools(descriptors)
+
+        fails = 0
+        for _ in range(MAX_STEPS_PER_TASK):
+            result = self.llm.chat(self.messages, tools=tools)
+            self.messages.append(
+                {
+                    "role": "assistant",
+                    "content": result.content or "",
+                    "tool_calls": result.tool_calls,
+                }
+            )
+            if not result.tool_calls:
+                # 纯文本回复:等待用户下一条消息,上下文保留
+                self._emit(task_id, "working", result.content or "", False)
+                return
+            for tc in result.tool_calls:
+                name = tc["function"]["name"]
+                args = self._parse_args(tc)
+                if name == "finish":
+                    self._emit(task_id, "done", args.get("summary", ""), True)
+                    return
+                content = self._run_tool(name, args, task_id)
+                if content.startswith("工具执行失败"):
+                    fails += 1
+                    if fails >= MAX_TOOL_FAILS:
+                        self._emit(task_id, "failed", f"工具连续失败 {fails} 次: {content}", True)
+                        return
+                else:
+                    fails = 0
+                self.messages.append({"role": "tool", "tool_call_id": tc["id"], "content": content})
+        self._emit(task_id, "failed", f"超过单任务最大步数 {MAX_STEPS_PER_TASK}", True)
+
+    def _run_tool(self, name: str, args: dict, task_id: str) -> str:
+        try:
+            if name == "load_skill":
+                skill = args.get("skill", "")
+                contents = self.skills.load([skill])
+                return contents.get(skill) or f"未找到 skill: {skill}"
+            result = self.adapter.execute(name, args, trace_id=task_id)
+            return json.dumps(result, ensure_ascii=False)
+        except Exception as exc:
+            return f"工具执行失败: {exc}"
+
+    @staticmethod
+    def _parse_args(tc) -> dict:
+        try:
+            return json.loads(tc["function"]["arguments"])
+        except json.JSONDecodeError:
+            return {}
+
+    def _emit(self, task_id: str, status: str, message: str, done: bool) -> None:
+        if self.on_state:
+            self.on_state(task_id, status, message, done)

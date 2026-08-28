@@ -23,12 +23,6 @@ def generate_launch_description():
             ),
             Node(
                 package="nova_agentos",
-                executable="nova_agentos_topic_router",
-                name="nova_topic_router",
-                output="screen",
-            ),
-            Node(
-                package="nova_agentos",
                 executable="nova_agentos_node",
                 name="nova_agentos",
                 output="screen",

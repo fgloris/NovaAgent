@@ -80,3 +80,7 @@ ssh -f -N -L 8765:localhost:8765 MaA6000
 ros2 run foxglove_bridge foxglove_bridge
 ```
 
+### 四、启动AgentOS
+```
+ros2 launch nova_agentos system.launch.py
+```

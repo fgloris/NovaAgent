@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # VLA executor bridge:本地 ROS2 侧,连接远程 pi0 推理服务。
-# 注册 pi0_policy 工具(声明 obs_bindings),由 AgentOS 注入 session 命名空间;
-# 执行期间订阅 session 相机/state,调用远程 HTTP 推理,把动作发回 <ns>/action_cmd。
+# 静态绑定 /nova/env/*:启动时常驻订阅 env 相机/state,滚动缓存最新帧;
+# pi0_policy 被调用时直接用缓存推理,把动作回灌到 /nova/env/action_cmd。
 import json
 import time
 
@@ -19,6 +19,7 @@ from nova_interfaces.msg import ExecutorHeartbeat, ToolDescriptor
 from nova_vla_executor.pi0_bridge import RemotePi0Client
 
 HEARTBEAT_TOPIC = "/nova/executors/heartbeat"
+ENV_NS = "/nova/env"
 _CAM_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
 
 
@@ -44,7 +45,18 @@ class VLAExecutorNode(Node):
         self.default_duration = float(self.get_parameter("default_duration_sec").value)
 
         self.client = RemotePi0Client(self.server_url, self.request_timeout)
-        self._bindings = {"cameras": self.camera_names, "state": self.state_keys}
+
+        # 常驻订阅 + 滚动缓存:被调用时直接用最新帧,无 discovery 等待
+        self._buf = {"frames": {}, "doc": None, "step": None, "dim": None}
+        for cam in self.camera_names:
+            self.create_subscription(
+                Image,
+                f"{ENV_NS}/camera/{cam}/image_raw",
+                self._make_cam_cb(cam),
+                _CAM_QOS,
+            )
+        self.create_subscription(String, f"{ENV_NS}/obs", self._make_obs_cb(), 10)
+        self._action_pub = self.create_publisher(Float32MultiArray, f"{ENV_NS}/action_cmd", 10)
 
         self._action_server = ActionServer(
             self, MCPExecute, f"/{self.get_name()}/pi0_policy/execute", self._execute_cb
@@ -54,7 +66,7 @@ class VLAExecutorNode(Node):
         self._publish_heartbeat()
         self.get_logger().info(
             f"VLA executor 就绪,远程推理: {self.server_url},"
-            f" cameras={self.camera_names}, state_keys={self.state_keys}"
+            f" cameras={self.camera_names}, state_keys={self.state_keys}, env={ENV_NS}"
         )
 
     def _publish_heartbeat(self) -> None:
@@ -63,23 +75,19 @@ class VLAExecutorNode(Node):
         tool = ToolDescriptor()
         tool.name = "pi0_policy"
         tool.description = (
-            "远程 pi0 VLA 策略:订阅 AgentOS 注入的 session 相机/state,"
+            "远程 pi0 VLA 策略:读取 /nova/env/* 最新相机/state,"
             "调用远程推理并把动作回灌到仿真"
         )
         tool.params_schema_json = json.dumps(
             {
                 "type": "object",
                 "properties": {
-                    "topic_namespace": {"type": "string", "description": "AgentOS 注入的 session 命名空间,无需用户提供"},
-                    "camera_names": {"type": "array", "items": {"type": "string"}, "description": "AgentOS 自发现后注入的实际相机名,无需用户提供"},
                     "duration_sec": {"type": "number", "description": "策略运行秒数"},
                     "instruction": {"type": "string", "description": "可选的指令覆盖(默认取 state JSON 的 instruction)"},
                 },
-                "required": ["topic_namespace"],
             }
         )
         tool.action_server_name = f"/{self.get_name()}/pi0_policy/execute"
-        tool.obs_bindings = json.dumps(self._bindings)
         hb.tools.append(tool)
         self._heartbeat_pub.publish(hb)
 
@@ -105,72 +113,43 @@ class VLAExecutorNode(Node):
             return result
 
     def _run_policy(self, params: dict) -> dict:
-        ns = str(params.get("topic_namespace", "")).rstrip("/")
         duration_sec = float(params.get("duration_sec", self.default_duration))
         instruction_override = str(params.get("instruction", "")).strip() or None
-        if not ns:
-            return {"ok": False, "executed": False, "error": "缺少 topic_namespace(需 AgentOS 注入)"}
-        # agentos 自发现后注入的实际相机名;未注入则回退到本节点配置的逻辑名
-        camera_names = list(params.get("camera_names") or self.camera_names)
-        base = ns + "/"
+        buf = self._buf
+        if not buf["frames"] or buf["doc"] is None:
+            self.get_logger().warn(f"尚未收到完整观测({ENV_NS}),跳过")
+            return {"ok": False, "executed": False, "error": "未收到相机/state 帧"}
 
-        buf = {"frames": {}, "doc": None, "step": None, "dim": None}
-        subs = []
-        for cam in camera_names:
-            sub = self.create_subscription(
-                Image, f"{base}camera/{cam}/image_raw", self._make_cam_cb(buf, cam), _CAM_QOS
-            )
-            subs.append(sub)
-        sub_state = self.create_subscription(
-            String, f"{base}state", self._make_state_cb(buf), 10
-        )
-        subs.append(sub_state)
-        pub_action = self.create_publisher(Float32MultiArray, f"{base}action_cmd", 10)
-        try:
-            # 等全部相机帧与 state 都就绪(容忍动态 topic discovery 延迟)
-            deadline = time.time() + 5.0
-            while time.time() < deadline and (
-                len(buf["frames"]) < len(camera_names) or buf["doc"] is None
-            ):
-                rclpy.spin_once(self, timeout_sec=0.2)
-            if not buf["frames"] or buf["doc"] is None:
-                self.get_logger().warn(f"未收到完整观测({ns}),跳过")
-                return {"ok": False, "executed": False, "error": "未收到相机/state 帧"}
-
-            last_step = -1
-            start = time.time()
-            n_infer = 0
-            n_error = 0
-            while time.time() - start < duration_sec:
-                rclpy.spin_once(self, timeout_sec=0.05)
-                if buf["step"] is None or buf["step"] == last_step:
-                    continue
-                last_step = buf["step"]
-                try:
-                    state = self._build_state_vector(buf)
-                    action = self.client.predict(
-                        dict(buf["frames"]),
-                        instruction_override or (buf["doc"].get("instruction") or ""),
-                        state,
+        last_step = -1
+        start = time.time()
+        n_infer = 0
+        n_error = 0
+        while time.time() - start < duration_sec:
+            rclpy.spin_once(self, timeout_sec=0.05)
+            if buf["step"] is None or buf["step"] == last_step:
+                continue
+            last_step = buf["step"]
+            try:
+                state = self._build_state_vector(buf)
+                action = self.client.predict(
+                    dict(buf["frames"]),
+                    instruction_override or (buf["doc"].get("instruction") or ""),
+                    state,
+                )
+                dim = buf["dim"]
+                if dim and action.size != dim:
+                    self.get_logger().warn(
+                        f"动作维度不匹配 remote={action.size} expected={dim},丢弃"
                     )
-                    dim = buf["dim"]
-                    if dim and action.size != dim:
-                        self.get_logger().warn(
-                            f"动作维度不匹配 remote={action.size} expected={dim},丢弃"
-                        )
-                        continue
-                    msg = Float32MultiArray()
-                    msg.data = action.tolist()
-                    pub_action.publish(msg)
-                    n_infer += 1
-                except Exception as exc:
-                    n_error += 1
-                    self.get_logger().error(f"远程推理失败: {exc}")
-            return {"ok": True, "executed": True, "infer_steps": n_infer, "errors": n_error}
-        finally:
-            for sub in subs:
-                self.destroy_subscription(sub)
-            self.destroy_publisher(pub_action)
+                    continue
+                msg = Float32MultiArray()
+                msg.data = action.tolist()
+                self._action_pub.publish(msg)
+                n_infer += 1
+            except Exception as exc:
+                n_error += 1
+                self.get_logger().error(f"远程推理失败: {exc}")
+        return {"ok": True, "executed": True, "infer_steps": n_infer, "errors": n_error}
 
     # 按 state_keys 从 obs JSON 的 state 摘取并拼接 state 向量;键缺失则跳过
     def _build_state_vector(self, buf: dict) -> np.ndarray | None:
@@ -186,7 +165,6 @@ class VLAExecutorNode(Node):
                 values.append(float(value))
         if values:
             return np.asarray(values, dtype=np.float32)
-        # 兜底:state 键缺失时用零向量保持推理链路可用
         dim = buf["dim"]
         if dim:
             self.get_logger().warn(
@@ -195,27 +173,29 @@ class VLAExecutorNode(Node):
             return np.zeros(dim, dtype=np.float32)
         return None
 
-    @staticmethod
-    def _make_cam_cb(buf: dict, cam: str):
+    def _make_cam_cb(self, cam: str):
         def cb(msg):
-            buf["frames"][cam] = _image_to_numpy(msg)
+            self._buf["frames"][cam] = _image_to_numpy(msg)
 
         return cb
 
-    @staticmethod
-    def _make_state_cb(buf: dict):
+    def _make_obs_cb(self):
         def cb(msg):
             try:
                 doc = json.loads(msg.data)
-                buf["doc"] = doc
-                buf["step"] = int(doc.get("step_count", 0))
+                self._buf["doc"] = doc
+                self._buf["step"] = int(doc.get("step_count", 0))
                 spec = doc.get("action_spec") or {}
                 dim = spec.get("dim")
-                buf["dim"] = int(dim) if dim else None
+                self._buf["dim"] = int(dim) if dim else None
             except Exception:
                 pass
 
         return cb
+
+    def destroy_node(self) -> bool:
+        self.client.close()
+        return super().destroy_node()
 
 
 def main(args=None) -> int:

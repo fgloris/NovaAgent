@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # 示例 executor:演示如何接入 NovaAgent。
 # 每个工具一个 MCPExecute action server,周期发布心跳供 executor_manager 发现。
-# pi0_policy 演示 VLA 语义:由 AgentOS 注入 topic_namespace,订阅 session 相机/state 并把动作回灌仿真。
+# pi0_policy 演示 VLA 语义:静态绑定 /nova/env/*,常驻订阅相机/state,把随机动作回灌仿真。
 import json
 import random
 import time
@@ -17,36 +17,31 @@ from nova_interfaces.action import MCPExecute
 from nova_interfaces.msg import ExecutorHeartbeat, ToolDescriptor
 
 HEARTBEAT_TOPIC = "/nova/executors/heartbeat"
+ENV_NS = "/nova/env"
 
-# 工具名 -> (执行函数, 参数 JSON Schema, obs_bindings JSON)
+# 工具名 -> (执行函数, 参数 JSON Schema)
 TOOL_SPECS = {
     "wait": (
         "阻塞指定秒数,用于在任务中插入时间间隔",
         {"type": "object", "properties": {"duration_sec": {"type": "number", "description": "等待秒数"}}, "required": ["duration_sec"]},
-        "",
     ),
     "echo": (
         "返回传入的文本,用于验证工具调用链路",
         {"type": "object", "properties": {"text": {"type": "string", "description": "要回显的文本"}}, "required": ["text"]},
-        "",
     ),
     "grasp": (
         "模拟抓取一个物体(仿真用,真实环境替换为 VLA/机械臂执行器)",
         {"type": "object", "properties": {"object": {"type": "string", "description": "要抓取的物体名"}}, "required": ["object"]},
-        "",
     ),
     "place": (
         "模拟放置物体到指定位置(仿真用,真实环境替换为 VLA/机械臂执行器)",
         {"type": "object", "properties": {"object": {"type": "string"}, "surface": {"type": "string", "description": "放置目标,如桌子/台面"}}, "required": ["object", "surface"]},
-        "",
     ),
     "pi0_policy": (
-        "VLA 演示工具:订阅 AgentOS 注入的 session 命名空间下相机与 state,持续把随机动作回灌到仿真,运行 duration_sec 秒",
+        "VLA 演示工具:读取 /nova/env/* 最新相机/state,持续把随机动作回灌到仿真,运行 duration_sec 秒",
         {"type": "object", "properties": {
-            "topic_namespace": {"type": "string", "description": "AgentOS 注入的 session 命名空间,无需用户提供"},
             "duration_sec": {"type": "number", "description": "策略运行秒数"},
-        }, "required": ["topic_namespace"]},
-        {"cameras": ["agentview"], "state": ["robot0_eef_pos"]},
+        }},
     ),
 }
 
@@ -84,7 +79,7 @@ class ExecutorDemoNode(Node):
         }
 
         self._action_servers = []
-        for name, (desc, schema, _) in TOOL_SPECS.items():
+        for name, (desc, schema) in TOOL_SPECS.items():
             action_server = f"/{self.get_name()}/{name}/execute"
             server = ActionServer(self, MCPExecute, action_server, self._make_execute_cb(name))
             self._action_servers.append(server)
@@ -97,13 +92,12 @@ class ExecutorDemoNode(Node):
     def _publish_heartbeat(self) -> None:
         hb = ExecutorHeartbeat()
         hb.executor_name = self.get_name()
-        for name, (desc, schema, bindings) in TOOL_SPECS.items():
+        for name, (desc, schema) in TOOL_SPECS.items():
             tool = ToolDescriptor()
             tool.name = name
             tool.description = desc
             tool.params_schema_json = json.dumps(schema)
             tool.action_server_name = f"/{self.get_name()}/{name}/execute"
-            tool.obs_bindings = bindings if isinstance(bindings, str) else json.dumps(bindings)
             hb.tools.append(tool)
         self._heartbeat_pub.publish(hb)
 
@@ -135,27 +129,22 @@ class ExecutorDemoNode(Node):
 
         return execute
 
-    # VLA 演示:订阅 <ns>/camera/agentview + <ns>/state,收到一帧后周期发随机动作到 <ns>/action_cmd
+    # VLA 演示:订阅 /nova/env/camera/agentview + /nova/env/obs,收到一帧后周期发随机动作到 /nova/env/action_cmd
     def _run_pi0_policy(self, params: dict) -> dict:
-        ns = str(params.get("topic_namespace", "")).rstrip("/")
         duration_sec = float(params.get("duration_sec", 3.0))
-        if not ns:
-            return {"ok": False, "executed": False, "error": "缺少 topic_namespace(需 AgentOS 注入)"}
-
         state = {"camera_frame": None, "action_dim": 0}
         cam_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
-        sub_cam = self.create_subscription(Image, f"{ns}/camera/agentview/image_raw", self._make_cam_cb(state), cam_qos)
-        sub_state = self.create_subscription(String, f"{ns}/state", self._make_state_cb(state), 10)
-        pub_action = self.create_publisher(Float32MultiArray, f"{ns}/action_cmd", 10)
+        sub_cam = self.create_subscription(Image, f"{ENV_NS}/camera/agentview/image_raw", self._make_cam_cb(state), cam_qos)
+        sub_state = self.create_subscription(String, f"{ENV_NS}/obs", self._make_state_cb(state), 10)
+        pub_action = self.create_publisher(Float32MultiArray, f"{ENV_NS}/action_cmd", 10)
         try:
-            # 等相机帧与 state(含 action_spec)都就绪,容忍动态 topic discovery 延迟
             deadline = time.time() + 5.0
             while time.time() < deadline and (
                 state["camera_frame"] is None or state["action_dim"] <= 0
             ):
                 rclpy.spin_once(self, timeout_sec=0.2)
             if state["camera_frame"] is None:
-                self.get_logger().warn(f"pi0_policy 未收到相机帧({ns}/camera/agentview),跳过")
+                self.get_logger().warn(f"pi0_policy 未收到相机帧({ENV_NS}/camera/agentview),跳过")
                 return {"ok": False, "executed": False, "error": "未收到相机帧"}
 
             dim = state["action_dim"] if state["action_dim"] > 0 else 7

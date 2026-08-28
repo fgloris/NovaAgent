@@ -101,5 +101,5 @@ ros2 run nova_robocasa_bridge random_action_client
 
 将该桥接器用作底层仿真边界：
 - LLM 规划器：读取 `/nova/env/obs`，尤其是 `instruction`，并选择下一个高层技能。
-- VLA 类 executor：由 AgentOS 注入专属命名空间 `/nova/session/{task_id}/{nid}/*`，消费其中的相机 topic 和 state JSON，并把动作发布到 `<ns>/action_cmd`（由 topic_router 回灌 `/nova/env/action_cmd`）。
+- VLA 类 executor：启动时静态绑定 `/nova/env/*`，常驻订阅相机 topic 和 state JSON，并把动作发布到 `/nova/env/action_cmd`（回灌 bridge，无动态路由）。
 - 桥接器：以 `publish_rate_hz` 步进 RoboCasa/MuJoCo，发布 reward/success，并对 NovaAgent 其余部分隐藏 RoboCasa 特有的动作维度（默认 12 维）细节。
