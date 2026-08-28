@@ -18,6 +18,7 @@ DEFAULT_MAX_TOKENS = 8192
 class ChatResult:
     content: str = ""
     tool_calls: list = field(default_factory=list)
+    reasoning_content: str = ""  # 思考模式(如 deepseek-v4-pro)必须原样带回,否则 400
     raw: dict = field(default_factory=dict)
 
 
@@ -88,7 +89,12 @@ class LLMClient:
             raise LLMError(f"openai {resp.status_code}: {resp.text[:300]}")
         data = resp.json()
         message = data["choices"][0]["message"]
-        return ChatResult(message.get("content") or "", message.get("tool_calls") or [], data)
+        return ChatResult(
+            message.get("content") or "",
+            message.get("tool_calls") or [],
+            message.get("reasoning_content") or "",
+            data,
+        )
 
     def _chat_anthropic(self, provider, messages, tools, temperature, max_tokens) -> ChatResult:
         url = provider["base_url"].rstrip("/") + "/v1/messages"
@@ -132,7 +138,7 @@ class LLMClient:
                         "function": {"name": block["name"], "arguments": json.dumps(block["input"])},
                     }
                 )
-        return ChatResult(content, tool_calls, data)
+        return ChatResult(content, tool_calls, "", data)
 
     # 把 OpenAI 风格消息转成 Anthropic 格式
     @staticmethod

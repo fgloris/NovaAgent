@@ -141,6 +141,7 @@ class AgentLoop:
                     "role": "assistant",
                     "content": result.content or "",
                     "tool_calls": result.tool_calls,
+                    **({"reasoning_content": result.reasoning_content} if result.reasoning_content else {}),
                 }
             )
             if result.content:
