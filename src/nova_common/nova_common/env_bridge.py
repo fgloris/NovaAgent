@@ -126,6 +126,9 @@ class EnvBridgeBase(Node):
         if self.latest_action is None:
             self.latest_action = self._zero_action()
         response = self.client.request({"type": "step", "action": self.latest_action})
+        # 消费即归零:每个动作只步进一次,未收到新动作时 timer 用零动作步进,
+        # 避免 VLA 发完最后一帧后被持续复用
+        self.latest_action = self._zero_action()
         self._absorb_response(response)
         reward = response.get("reward", 0.0)
         done = response.get("terminated", False)
