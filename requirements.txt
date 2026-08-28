@@ -31,3 +31,10 @@ robosuite>=1.4
 # openpi 的 JAX/GPU 依赖(jax[cuda12]==0.5.3、torch==2.7.1、numpy<2.0.0 等)由 openpi 仓库
 # 自身管理,不要在此文件列出;也请勿把系统 3.10 环境的 numpy 降到 <2 去迁就它。
 # server 与 bridge 走 WebSocket 二进制帧(免 base64),pydantic 已不再需要。
+
+# ---- nova_console(Web 会话管理器 + agent 聊天面板,运行在 ROS 环境)----
+fastapi>=0.110        # Web 后端
+uvicorn>=0.27         # ASGI server
+ptyprocess>=0.7       # PTY 会话(子进程管理)
+websockets>=12        # WS 传输(uvicorn[standard] 依赖)
+

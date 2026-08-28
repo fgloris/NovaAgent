@@ -1,0 +1,40 @@
+# nova_console 会话配置:profiles.<name>.sessions[] 定义一套可一键拉起的栈。
+# 会话字段:id/name/venv?/workdir?/env?/pre[]/command/depends_on[]/wait_for?/wait_timeout_sec?
+#   venv    : 激活的 venv(脚本里 source <venv>/bin/activate)
+#   pre     : 命令前执行的前置命令(如 source 环境变量),按顺序
+#   command : 主命令
+#   depends_on: 依赖的会话 id,全部 ready 后才启动
+#   wait_for : 输出中出现该文本(正则)即视为 ready;不配则进程 running 即视为 ready
+profiles:
+  robocasa_loop:
+    sessions:
+      - id: sim
+        name: RoboCasa 仿真
+        venv: ~/data1/lxy/robocasa/.venv
+        workdir: ~/data1/lxy/NovaAgent
+        command: python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
+        wait_for: "warmup done in"
+        wait_timeout_sec: 300
+
+      - id: pi0
+        name: pi0 server
+        depends_on: [sim]
+        venv: ~/data1/lxy/openpi/.venv
+        workdir: ~/data1/lxy/NovaAgent
+        command: python3 src/nova_vla_executor/nova_vla_executor/pi0_server.py
+        wait_for: "Application startup complete"
+        wait_timeout_sec: 120
+
+      - id: bridge
+        name: robocasa bridge
+        depends_on: [sim]
+        pre: ["source ~/data1/lxy/env.sh"]
+        workdir: ~/data1/lxy/NovaAgent
+        command: ros2 run nova_robocasa_bridge robocasa_bridge_node
+
+      - id: agentos
+        name: AgentOS
+        depends_on: [bridge, pi0]
+        pre: ["source ~/data1/lxy/env.sh"]
+        workdir: ~/data1/lxy/NovaAgent
+        command: ros2 launch nova_agentos system.launch.py

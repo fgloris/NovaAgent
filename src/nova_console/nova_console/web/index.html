@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <title>NovaAgent Console</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="toolbar">
+    <select id="profile-select"></select>
+    <button id="btn-start">启动整套</button>
+    <button id="btn-stopall">全部停止</button>
+    <span id="conn" class="conn off">未连接</span>
+  </div>
+  <div id="body">
+    <div id="sidebar"><div id="session-list"></div></div>
+    <div id="main">
+      <div id="terminals"></div>
+      <div id="chat">
+        <div id="chat-log"></div>
+        <div id="chat-input">
+          <input id="chat-box" type="text" placeholder="发送消息给 agent(上下文跨任务累积)…" autocomplete="off">
+          <button id="chat-send">发送</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

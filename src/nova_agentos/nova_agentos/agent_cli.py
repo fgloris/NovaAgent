@@ -37,6 +37,7 @@ class AgentCliNode(Node):
         self.declare_parameter("agent_msg_topic", "/nova/agentos/agent_msg")
         self.declare_parameter("env_reset_service", "/nova/env/reset")
         self.declare_parameter("env_info_service", "/nova/env/info")
+        self.declare_parameter("console_url", "http://127.0.0.1:8090")
 
         cg = MutuallyExclusiveCallbackGroup()
         self._run_client = self.create_client(
@@ -113,10 +114,33 @@ class AgentCliNode(Node):
             "  /reset  重置仿真环境\n"
             "  /ping   测每个 LLM provider 连接延迟\n"
             "  /env    查询仿真环境规格(相机/state/action 键)\n"
+            "  /setup [profile]  经 nova_console 拉起整套栈(默认 robocasa_loop)\n"
+            "  /sessions          查看 nova_console 会话状态\n"
             "  /help   显示此帮助\n"
             "  /quit   退出\n"
             "其余输入作为指令发给 agent(上下文跨任务累积)"
         )
+
+    # ---------- nova_console 交互(HTTP,不依赖 ROS 服务) ----------
+    def _console(self, path: str, method: str = "GET") -> dict:
+        import requests
+
+        url = str(self.get_parameter("console_url").value).rstrip("/") + path
+        resp = requests.request(method, url, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+
+    def setup_console(self, profile: str | None) -> str:
+        name = profile or "robocasa_loop"
+        data = self._console(f"/api/start/{name}", "POST")
+        return f"启动 {name}: {'OK' if data.get('ok') else '失败 ' + str(data.get('error', ''))}"
+
+    def sessions_console(self) -> str:
+        data = self._console("/api/sessions")
+        sessions = data.get("sessions") or []
+        if not sessions:
+            return "(无会话)"
+        return "\n".join(f"  {s['id']:<10} {s['status']:<10} {s['name']}" for s in sessions)
 
 
 def main(args=None) -> int:
@@ -141,12 +165,17 @@ def main(args=None) -> int:
             try:
                 if line.startswith("/"):
                     cmd, *rest = line.split(maxsplit=1)
-                    text = {
-                        "/help": node.help_text(),
-                        "/reset": node.reset_env(),
-                        "/ping": node.ping_llm(),
-                        "/env": node.env_info(),
-                    }.get(cmd)
+                    if cmd == "/setup":
+                        text = node.setup_console(rest[0] if rest else None)
+                    elif cmd == "/sessions":
+                        text = node.sessions_console()
+                    else:
+                        text = {
+                            "/help": node.help_text(),
+                            "/reset": node.reset_env(),
+                            "/ping": node.ping_llm(),
+                            "/env": node.env_info(),
+                        }.get(cmd)
                     if text is None:
                         print(f"未知命令: {cmd}(/help 查看)", flush=True)
                     else:
