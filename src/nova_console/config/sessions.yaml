@@ -12,6 +12,7 @@ profiles:
         name: RoboCasa 仿真
         venv: ~/data1/lxy/robocasa/.venv
         workdir: ~/data1/lxy/NovaAgent
+        pre: ["source ~/data1/lxy/env.sh"]
         command: python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
         wait_for: "warmup done in"
         wait_timeout_sec: 300
@@ -28,13 +29,14 @@ profiles:
       - id: bridge
         name: robocasa bridge
         depends_on: [sim]
-        pre: ["source ~/data1/lxy/env.sh"]
+        pre: ["source ~/data1/lxy/env.sh && source ~/data1/lxy/NovaAgent/install/setup.sh"]
         workdir: ~/data1/lxy/NovaAgent
         command: ros2 run nova_robocasa_bridge robocasa_bridge_node
 
       - id: agentos
         name: AgentOS
         depends_on: [bridge, pi0]
-        pre: ["source ~/data1/lxy/env.sh"]
+        pre: ["source ~/data1/lxy/env.sh && source ~/data1/lxy/NovaAgent/install/setup.sh"]
         workdir: ~/data1/lxy/NovaAgent
         command: ros2 launch nova_agentos system.launch.py
+

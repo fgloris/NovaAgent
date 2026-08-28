@@ -31,8 +31,7 @@ opencode -s ses_fcc87a673ffes3DTdEUZaCf9Fn
 ### 一、运行robocasa仿真
 terminal 1:
 ```
-. ../robocasa/.venv/bin/activate
-python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
+. ../robocasa/.venv/bin/activate && python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
 ```
 等显示
 ```
@@ -45,14 +44,12 @@ RoboCasa sim server listening on 127.0.0.1:8766
 后，开terminal 2:
 
 ```bash
-. install/setup.sh
-ros2 run nova_robocasa_bridge random_action_client
+. install/setup.sh && ros2 run nova_robocasa_bridge robocasa_bridge_node
 ```
 
 ### 二、运行vla backend
 ```
-. ../openpi/.venv/bin/activate
-python src/nova_vla_executor/nova_vla_executor/pi0_server.py
+. ../env.sh && . ../openpi/.venv/bin/activate && python src/nova_vla_executor/nova_vla_executor/pi0_server.py
 ```
 等显示
 ```
@@ -82,7 +79,16 @@ ros2 run foxglove_bridge foxglove_bridge
 
 ### 四、启动AgentOS
 ```
-ros2 launch nova_agentos system.launch.py
+. ../env.sh && . install/setup.sh && ros2 launch nova_agentos system.launch.py
+```
+
+### 五、各类命令
+```
+ros2 service call /nova/agentos/run nova_interfaces/srv/RunTask "{instruction: '把桌面收拾干净'}"
+```
+reset仿真环境：
+```
+ros2 service call /nova/env/reset std_srvs/srv/Trigger "{}"
 ```
 
 # 8.28
