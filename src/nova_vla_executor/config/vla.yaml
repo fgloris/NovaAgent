@@ -1,0 +1,15 @@
+nova_vla_executor:
+  ros__parameters:
+    server_url: "http://127.0.0.1:8767"
+    request_timeout_sec: 60.0
+    heartbeat_rate_hz: 1.0
+
+    # 相机/state 键必须与运行中的 env 一致(robocasa groot fork)。
+    camera_names: ["robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand"]
+    state_keys: ["end_effector_position_relative", "end_effector_rotation_relative", "base_position", "base_rotation", "gripper_qpos"]
+
+    # 策略执行:一次预测后连续执行 replan_steps 个环境步再重规划(官方评测为 5)。
+    replan_steps: 5
+    # 结束条件:success / 墙钟达到 default_duration_sec / 已执行环境步数达到 max_env_steps,三者任一先到。
+    default_duration_sec: 30.0
+    max_env_steps: 200

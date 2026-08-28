@@ -1,4 +1,6 @@
 # 一键启动 NovaAgent 演示系统:VLA executor + executor_manager + agentos
+from pathlib import Path
+
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
@@ -6,6 +8,7 @@ from ament_index_python.packages import get_package_share_directory
 
 def generate_launch_description():
     skills_dir = get_package_share_directory("nova_agentos") + "/skills"
+    vla_config = Path(get_package_share_directory("nova_vla_executor")) / "config" / "vla.yaml"
     return LaunchDescription(
         [
             Node(
@@ -13,7 +16,7 @@ def generate_launch_description():
                 executable="nova_vla_executor_node",
                 name="nova_vla_executor",
                 output="screen",
-                parameters=[{"server_url": "http://127.0.0.1:8767"}],
+                parameters=[str(vla_config)],
             ),
             Node(
                 package="nova_executor_manager",

@@ -23,6 +23,7 @@ import argparse
 import asyncio
 import json
 import os
+import time
 
 import numpy as np
 
@@ -109,11 +110,12 @@ def _split_body(header: dict, body: bytes) -> dict[str, np.ndarray]:
     return images
 
 
-def _action_from_output(out: dict) -> list[float]:
-    action = np.asarray(out["actions"])
-    if action.ndim == 2:
-        action = action[0]
-    return action.astype(float).tolist()
+def _action_chunk_from_output(out: dict) -> np.ndarray:
+    """返回完整动作 chunk (horizon, action_dim);单行时补成 2D。"""
+    action = np.asarray(out["actions"], dtype=np.float32)
+    if action.ndim == 1:
+        action = action[None, :]
+    return action
 
 
 def build_app(checkpoint_dir: str, model_id: str, obs_key_map: dict[str, str]):
@@ -153,9 +155,22 @@ def build_app(checkpoint_dir: str, model_id: str, obs_key_map: dict[str, str]):
             if state is not None:
                 obs["observation/state"] = np.asarray(state, dtype=np.float32)
             print(f"[pi0] obs keys: {list(obs.keys())}, images keys: {list(images.keys())}", flush=True)
+            t0 = time.perf_counter()
             out = await loop.run_in_executor(None, lambda: policy.infer(obs))
-            action = _action_from_output(out)
-            await ws.send_json({"action": action, "action_dim": len(action)})
+            chunk = _action_chunk_from_output(out)
+            infer_ms = (out.get("policy_timing") or {}).get("infer_ms", float("nan"))
+            total_ms = (time.perf_counter() - t0) * 1000
+            print(
+                f"[pi0] infer model={infer_ms:.0f}ms total={total_ms:.0f}ms chunk={chunk.shape}",
+                flush=True,
+            )
+            await ws.send_json(
+                {
+                    "action": chunk[0].astype(float).tolist(),
+                    "action_chunk": chunk.astype(float).tolist(),
+                    "action_dim": int(chunk.shape[1]),
+                }
+            )
 
     return app
 

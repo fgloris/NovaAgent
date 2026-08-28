@@ -40,6 +40,8 @@ class VLAExecutorNode(Node):
         self.declare_parameter("camera_names", ["robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand"])
         self.declare_parameter("state_keys", ["end_effector_position_relative", "end_effector_rotation_relative", "base_position", "base_rotation", "gripper_qpos"])
         self.declare_parameter("default_duration_sec", 10.0)
+        self.declare_parameter("replan_steps", 5)
+        self.declare_parameter("max_env_steps", 200)
 
         self.server_url = str(self.get_parameter("server_url").value)
         self.request_timeout = float(self.get_parameter("request_timeout_sec").value)
@@ -47,6 +49,8 @@ class VLAExecutorNode(Node):
         self.camera_names = list(self.get_parameter("camera_names").value)
         self.state_keys = list(self.get_parameter("state_keys").value)
         self.default_duration = float(self.get_parameter("default_duration_sec").value)
+        self.replan_steps = max(1, int(self.get_parameter("replan_steps").value))
+        self.max_env_steps = max(1, int(self.get_parameter("max_env_steps").value))
 
         self.client = RemotePi0Client(self.server_url, self.request_timeout)
 
@@ -123,38 +127,68 @@ class VLAExecutorNode(Node):
             return {"ok": False, "executed": False, "error": "未收到相机/state 帧"}
 
         last_step = -1
+        chunk: np.ndarray | None = None
+        chunk_idx = 0
         start = time.time()
         n_infer = 0
+        n_exec = 0
         n_error = 0
+        infer_times: list[float] = []
+        dim = buf["dim"]
         while time.time() - start < self.default_duration:
             if (buf["doc"] or {}).get("success"):
+                break
+            if n_exec >= self.max_env_steps:
                 break
             if buf["step"] is None or buf["step"] == last_step:
                 # 订阅回调由 MultiThreadedExecutor 并发驱动,这里只轮询,不嵌套 spin
                 time.sleep(0.05)
                 continue
             last_step = buf["step"]
-            try:
-                state = self._build_state_vector(buf)
-                action = self.client.predict(
-                    dict(buf["frames"]),
-                    instruction_override or (buf["doc"].get("instruction") or ""),
-                    state,
-                )
-                dim = buf["dim"]
-                if dim and action.size != dim:
-                    self.get_logger().warn(
-                        f"动作维度不匹配 remote={action.size} expected={dim},丢弃"
+            # chunk 耗尽才重新推理;一次预测后连续执行 replan_steps 步
+            if chunk is None or chunk_idx >= chunk.shape[0]:
+                try:
+                    state = self._build_state_vector(buf)
+                    t0 = time.perf_counter()
+                    raw_chunk = self.client.predict(
+                        dict(buf["frames"]),
+                        instruction_override or (buf["doc"].get("instruction") or ""),
+                        state,
                     )
+                    infer_times.append((time.perf_counter() - t0) * 1000)
+                    if dim and raw_chunk.shape[1] != dim:
+                        self.get_logger().warn(
+                            f"动作维度不匹配 remote={raw_chunk.shape[1]} expected={dim},丢弃该轮"
+                        )
+                        chunk = None
+                        continue
+                    chunk = raw_chunk[: self.replan_steps]
+                    chunk_idx = 0
+                    n_infer += 1
+                except Exception as exc:
+                    n_error += 1
+                    chunk = None
+                    self.get_logger().error(f"远程推理失败: {exc}")
                     continue
+            try:
                 msg = Float32MultiArray()
-                msg.data = action.tolist()
+                msg.data = chunk[chunk_idx].tolist()
                 self._action_pub.publish(msg)
-                n_infer += 1
+                chunk_idx += 1
+                n_exec += 1
             except Exception as exc:
                 n_error += 1
-                self.get_logger().error(f"远程推理失败: {exc}")
-        return {"ok": True, "executed": True, "infer_steps": n_infer, "errors": n_error}
+                self.get_logger().error(f"发布动作失败: {exc}")
+        avg_infer_ms = sum(infer_times) / len(infer_times) if infer_times else 0.0
+        return {
+            "ok": True,
+            "executed": True,
+            "infer_steps": n_infer,
+            "executed_steps": n_exec,
+            "errors": n_error,
+            "avg_infer_ms": round(avg_infer_ms, 1),
+            "replan_steps": self.replan_steps,
+        }
 
     # 按 state_keys 从 obs JSON 的 state 摘取并拼接 state 向量;键缺失则跳过
     def _build_state_vector(self, buf: dict) -> np.ndarray | None:

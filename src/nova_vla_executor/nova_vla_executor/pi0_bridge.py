@@ -55,9 +55,11 @@ class RemotePi0Client:
             except Exception:
                 self._ws = None
                 raise
-        if "action" not in data:
-            raise RuntimeError(f"远程服务响应缺少 action: {data}")
-        return np.asarray(data["action"], dtype=np.float32)
+        if "action_chunk" in data:
+            return np.asarray(data["action_chunk"], dtype=np.float32)
+        if "action" in data:
+            return np.asarray(data["action"], dtype=np.float32)[None, :]
+        raise RuntimeError(f"远程服务响应缺少 action/action_chunk: {data}")
 
     def _connect(self) -> None:
         if self._ws is not None:
