@@ -8,6 +8,7 @@ import time
 import numpy as np
 import rclpy
 from rclpy.action import ActionServer
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
@@ -34,9 +35,10 @@ class VLAExecutorNode(Node):
         self.declare_parameter("request_timeout_sec", 60.0)
         self.declare_parameter("heartbeat_rate_hz", 1.0)
         # 静态绑定 /nova/env/* 的相机/state 键,必须与运行中的 env 一致(robocasa groot fork)。
+        # obs JSON 里 state 键不带前缀(robocasa gym_wrapper k[5:] 已剥掉 body./hand.)。
         # state_keys 顺序 = 模型训练时 groot_openpi_dataset 的 state 拼接顺序(eef 在前,base 在后)
         self.declare_parameter("camera_names", ["robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand"])
-        self.declare_parameter("state_keys", ["body.end_effector_position_relative", "body.end_effector_rotation_relative", "body.base_position", "body.base_rotation", "hand.gripper_qpos"])
+        self.declare_parameter("state_keys", ["end_effector_position_relative", "end_effector_rotation_relative", "base_position", "base_rotation", "gripper_qpos"])
         self.declare_parameter("default_duration_sec", 10.0)
 
         self.server_url = str(self.get_parameter("server_url").value)
@@ -125,10 +127,11 @@ class VLAExecutorNode(Node):
         n_infer = 0
         n_error = 0
         while time.time() - start < self.default_duration:
-            rclpy.spin_once(self, timeout_sec=0.05)
             if (buf["doc"] or {}).get("success"):
                 break
             if buf["step"] is None or buf["step"] == last_step:
+                # 订阅回调由 MultiThreadedExecutor 并发驱动,这里只轮询,不嵌套 spin
+                time.sleep(0.05)
                 continue
             last_step = buf["step"]
             try:
@@ -203,11 +206,16 @@ class VLAExecutorNode(Node):
 def main(args=None) -> int:
     rclpy.init(args=args)
     node = VLAExecutorNode()
+    # MultiThreadedExecutor:策略执行期间(阻塞在推理)心跳/订阅仍由其它线程驱动,
+    # 避免 executor_manager 把工具判下线
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
     return 0
