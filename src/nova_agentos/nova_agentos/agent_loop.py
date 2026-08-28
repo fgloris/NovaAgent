@@ -104,8 +104,14 @@ class AgentLoop:
         tools = [LOAD_SKILL_TOOL, FINISH_TOOL] + to_llm_tools(descriptors)
 
         fails = 0
-        for _ in range(MAX_STEPS_PER_TASK):
+        for round_no in range(1, MAX_STEPS_PER_TASK + 1):
             result = self.llm.chat(self.messages, tools=tools)
+            print(
+                f"[agent_loop] task={task_id} round={round_no} "
+                f"content={result.content!r} "
+                f"tool_calls={[tc['function']['name'] + ' ' + tc['function']['arguments'] for tc in result.tool_calls]}",
+                flush=True,
+            )
             self.messages.append(
                 {
                     "role": "assistant",
@@ -124,6 +130,7 @@ class AgentLoop:
                     self._emit(task_id, "done", args.get("summary", ""), True)
                     return
                 content = self._run_tool(name, args, task_id)
+                print(f"[agent_loop] task={task_id} tool={name} result={content[:200]}", flush=True)
                 if content.startswith("工具执行失败"):
                     fails += 1
                     if fails >= MAX_TOOL_FAILS:
