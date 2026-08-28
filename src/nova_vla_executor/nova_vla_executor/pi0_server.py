@@ -28,10 +28,13 @@ import numpy as np
 
 APP = None  # FastAPI app(延迟 import,避免 --help 也要 fastapi)
 
-# 相机名 -> 模型 config 的 observation 键(pi0_robocasa 默认布局)
+# 相机名 -> 模型 config 的 observation 键(pi0_robocasa groot fork 默认布局)。
+# 客户端相机名与数据集 modality 键一致(见 robocasa gym_wrapper.get_camera_config)。
+# 若远端 openpi fork 的 config 用的是别的键(如 observation/image 风格),用 --obs-key-map 覆盖。
 DEFAULT_OBS_KEY_MAP = {
-    "agentview": "observation/image",
-    "robot0_eye_in_hand": "observation/wrist_image",
+    "robot0_agentview_left": "observation.images.robot0_agentview_left",
+    "robot0_agentview_right": "observation.images.robot0_agentview_right",
+    "robot0_eye_in_hand": "observation.images.robot0_eye_in_hand",
 }
 
 

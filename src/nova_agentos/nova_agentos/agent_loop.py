@@ -18,10 +18,9 @@ MAX_STEPS_PER_TASK = 20
 MAX_TOOL_FAILS = 3
 
 SYSTEM_BASE = (
-    "你是具身机器人 NovaAgent 的 agent。你的任务:理解用户指令,通过调用工具逐步执行,"
+    "你是具身机器人 NovaAgent 的 agent。你需要理解用户指令,通过调用工具逐步执行任务,"
     "每次调用一个工具,根据工具返回结果决定下一步,直到任务完成。"
     "需要领域经验时先调用 load_skill 加载;任务完成时必须调用 finish 并给出总结。"
-    "注意对话上下文会跨任务保留,之前做过的任务与结果可以复用。"
 )
 
 FINISH_TOOL = {

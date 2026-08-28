@@ -67,12 +67,13 @@ def summarize_value(value: Any) -> Any:
     return value
 
 
-# 键名统一规则:
+# 键名统一规则(幂等,兼容已带 video./state. 前缀的键,如 robocasa groot gym wrapper 输出):
 #   3D 且 shape[-1]==3 的数组 -> video.{key};若 key 以 "_image" 结尾则先剥掉
 #   其余(含字符串/标量/低维数组) -> state.{key}
 # 相机名里的非法字符(. 等)替换为 _,否则 ROS2 话题名会非法
 # LIBERO 键 agentview      -> video.agentview
 # RoboCasa 键 agentview_image -> video.agentview(剥 _image,相机名统一)
+# RoboCasa(groot) 键 video.robot0_agentview_left -> video.robot0_agentview_left(不再重复加前缀)
 def _safe_camera_name(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_]", "_", name)
 
@@ -80,10 +81,15 @@ def normalize_obs(obs: dict[str, Any]) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     for key, value in obs.items():
         if isinstance(value, np.ndarray) and value.ndim == 3 and value.shape[-1] == 3:
-            name = key
-            if name.endswith("_image"):
-                name = name[: -len("_image")]
+            if key.startswith("video."):
+                name = key[len("video."):]
+            else:
+                name = key
+                if name.endswith("_image"):
+                    name = name[: -len("_image")]
             normalized[f"video.{_safe_camera_name(name)}"] = value
+        elif key.startswith("state."):
+            normalized[key] = value
         else:
             normalized[f"state.{key}"] = value
     return normalized

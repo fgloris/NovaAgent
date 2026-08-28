@@ -84,3 +84,6 @@ ros2 run foxglove_bridge foxglove_bridge
 ```
 ros2 launch nova_agentos system.launch.py
 ```
+
+# 8.28
+1. 去掉过度设计部分。动态router，统一改成静态remapping，DAG也去掉。

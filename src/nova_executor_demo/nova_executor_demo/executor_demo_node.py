@@ -38,9 +38,9 @@ TOOL_SPECS = {
         {"type": "object", "properties": {"object": {"type": "string"}, "surface": {"type": "string", "description": "放置目标,如桌子/台面"}}, "required": ["object", "surface"]},
     ),
     "pi0_policy": (
-        "VLA 演示工具:读取 /nova/env/* 最新相机/state,持续把随机动作回灌到仿真,运行 duration_sec 秒",
+        "VLA 演示工具:读取 /nova/env/* 最新相机/state,持续把随机动作回灌到仿真,直到任务成功或超时",
         {"type": "object", "properties": {
-            "duration_sec": {"type": "number", "description": "策略运行秒数"},
+            "instruction": {"type": "string", "description": "任务语言指令(可选,缺省用环境提供的 task_description)"},
         }},
     ),
 }
@@ -129,12 +129,11 @@ class ExecutorDemoNode(Node):
 
         return execute
 
-    # VLA 演示:订阅 /nova/env/camera/agentview + /nova/env/obs,收到一帧后周期发随机动作到 /nova/env/action_cmd
+    # VLA 演示:订阅 /nova/env/camera/robot0_agentview_left + /nova/env/obs,收到一帧后周期发随机动作到 /nova/env/action_cmd
     def _run_pi0_policy(self, params: dict) -> dict:
-        duration_sec = float(params.get("duration_sec", 3.0))
         state = {"camera_frame": None, "action_dim": 0}
         cam_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
-        sub_cam = self.create_subscription(Image, f"{ENV_NS}/camera/agentview/image_raw", self._make_cam_cb(state), cam_qos)
+        sub_cam = self.create_subscription(Image, f"{ENV_NS}/camera/robot0_agentview_left/image_raw", self._make_cam_cb(state), cam_qos)
         sub_state = self.create_subscription(String, f"{ENV_NS}/obs", self._make_state_cb(state), 10)
         pub_action = self.create_publisher(Float32MultiArray, f"{ENV_NS}/action_cmd", 10)
         try:
@@ -144,13 +143,13 @@ class ExecutorDemoNode(Node):
             ):
                 rclpy.spin_once(self, timeout_sec=0.2)
             if state["camera_frame"] is None:
-                self.get_logger().warn(f"pi0_policy 未收到相机帧({ENV_NS}/camera/agentview),跳过")
+                self.get_logger().warn(f"pi0_policy 未收到相机帧({ENV_NS}/camera/robot0_agentview_left),跳过")
                 return {"ok": False, "executed": False, "error": "未收到相机帧"}
 
             dim = state["action_dim"] if state["action_dim"] > 0 else 7
             start = time.time()
             count = 0
-            while time.time() - start < duration_sec:
+            while time.time() - start < 3.0:
                 rclpy.spin_once(self, timeout_sec=0.1)
                 values = [random.uniform(-0.05, 0.05) for _ in range(dim)]
                 if dim > 6:

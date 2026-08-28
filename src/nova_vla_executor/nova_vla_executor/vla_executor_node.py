@@ -33,8 +33,9 @@ class VLAExecutorNode(Node):
         self.declare_parameter("server_url", "http://127.0.0.1:8767")
         self.declare_parameter("request_timeout_sec", 60.0)
         self.declare_parameter("heartbeat_rate_hz", 1.0)
-        self.declare_parameter("camera_names", ["agentview", "robot0_eye_in_hand"])
-        self.declare_parameter("state_keys", ["robot0_eef_pos"])
+        # 静态绑定 /nova/env/* 的相机/state 键,必须与运行中的 env 一致(robocasa groot fork)
+        self.declare_parameter("camera_names", ["robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand"])
+        self.declare_parameter("state_keys", ["body.base_position", "body.base_rotation", "body.end_effector_position_relative", "body.end_effector_rotation_relative", "hand.gripper_qpos"])
         self.declare_parameter("default_duration_sec", 10.0)
 
         self.server_url = str(self.get_parameter("server_url").value)
@@ -76,14 +77,13 @@ class VLAExecutorNode(Node):
         tool.name = "pi0_policy"
         tool.description = (
             "远程 pi0 VLA 策略:读取 /nova/env/* 最新相机/state,"
-            "调用远程推理并把动作回灌到仿真"
+            "调用远程推理并把动作回灌到仿真,直到任务成功或超时"
         )
         tool.params_schema_json = json.dumps(
             {
                 "type": "object",
                 "properties": {
-                    "duration_sec": {"type": "number", "description": "策略运行秒数"},
-                    "instruction": {"type": "string", "description": "可选的指令覆盖(默认取 state JSON 的 instruction)"},
+                    "instruction": {"type": "string", "description": "任务语言指令(可选,缺省用环境提供的 task_description)"},
                 },
             }
         )
@@ -113,7 +113,6 @@ class VLAExecutorNode(Node):
             return result
 
     def _run_policy(self, params: dict) -> dict:
-        duration_sec = float(params.get("duration_sec", self.default_duration))
         instruction_override = str(params.get("instruction", "")).strip() or None
         buf = self._buf
         if not buf["frames"] or buf["doc"] is None:
@@ -124,8 +123,10 @@ class VLAExecutorNode(Node):
         start = time.time()
         n_infer = 0
         n_error = 0
-        while time.time() - start < duration_sec:
+        while time.time() - start < self.default_duration:
             rclpy.spin_once(self, timeout_sec=0.05)
+            if (buf["doc"] or {}).get("success"):
+                break
             if buf["step"] is None or buf["step"] == last_step:
                 continue
             last_step = buf["step"]
