@@ -184,7 +184,16 @@ class VLAExecutorNode(Node):
                 values.extend(float(x) for x in value)
             elif isinstance(value, (int, float)):
                 values.append(float(value))
-        return np.asarray(values, dtype=np.float32) if values else None
+        if values:
+            return np.asarray(values, dtype=np.float32)
+        # 兜底:state 键缺失时用零向量保持推理链路可用
+        dim = buf["dim"]
+        if dim:
+            self.get_logger().warn(
+                f"state 键 {self.state_keys} 缺失,可用键={list(state.keys())},使用零向量(dim={dim})"
+            )
+            return np.zeros(dim, dtype=np.float32)
+        return None
 
     @staticmethod
     def _make_cam_cb(buf: dict, cam: str):
