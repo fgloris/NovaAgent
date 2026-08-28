@@ -158,7 +158,8 @@ class AgentosNode(Node):
             cameras = (self._env_info.get("obs_spec") or {}).get("cameras") or {}
         cam_bindings = bindings.get("cameras") or []
         if cam_bindings:
-            cam_selected = [c for c in cam_bindings if c in cameras]
+            # env_info 可用时取交集(过滤仿真不存在的相机);不可用则按 bindings 全量 map
+            cam_selected = [c for c in cam_bindings if not cameras or c in cameras]
         else:
             cam_selected = list(cameras.keys())
         for cam in cam_selected:
