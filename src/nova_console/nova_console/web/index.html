@@ -7,24 +7,67 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <div id="toolbar">
-    <select id="profile-select"></select>
-    <button id="btn-start">启动整套</button>
-    <button id="btn-stopall">全部停止</button>
-    <span id="conn" class="conn conn">连接中…</span>
-  </div>
-  <div id="body">
-    <div id="sidebar"><div id="session-list"></div></div>
-    <div id="main">
-      <div id="terminals"></div>
-      <div id="chat">
-        <div id="chat-log"></div>
-        <div id="chat-input">
-          <input id="chat-box" type="text" placeholder="发送消息给 agent(上下文跨任务累积)…" autocomplete="off">
-          <button id="chat-send">发送</button>
+  <div id="app-shell">
+    <aside id="sidebar">
+      <div id="brand">
+        <div>
+          <div class="eyebrow">NovaAgent</div>
+          <h1>Console</h1>
+        </div>
+        <span id="conn" class="conn conn">连接中…</span>
+      </div>
+      <div id="profile-card">
+        <label for="profile-select">Profile</label>
+        <div class="profile-row">
+          <select id="profile-select"></select>
+          <button id="btn-start" title="启动整套">启动</button>
+        </div>
+        <button id="btn-stopall" class="danger" title="停止全部 session">全部停止</button>
+      </div>
+      <div class="sidebar-head">
+        <span>Sessions</span>
+        <span id="session-count">0</span>
+      </div>
+      <div id="session-list"></div>
+    </aside>
+    <main id="main">
+      <header id="session-header">
+        <div>
+          <div id="current-name">未选择 session</div>
+          <div id="current-meta">启动 profile 后查看命令与输出</div>
+        </div>
+        <div id="current-actions">
+          <button id="btn-current-restart" title="重启当前 session">重启</button>
+          <button id="btn-current-stop" class="danger" title="停止当前 session">停止</button>
         </div>
       </div>
-    </div>
+      <section id="command-panel">
+        <div class="kv">
+          <span>Command</span>
+          <code id="current-command">-</code>
+        </div>
+        <div class="meta-grid">
+          <div class="kv"><span>Workdir</span><code id="current-workdir">-</code></div>
+          <div class="kv"><span>Venv</span><code id="current-venv">-</code></div>
+          <div class="kv"><span>Depends</span><code id="current-depends">-</code></div>
+          <div class="kv"><span>Ready</span><code id="current-ready">-</code></div>
+        </div>
+      </section>
+      <section id="workspace">
+        <div id="terminal-pane">
+          <div class="pane-title"><span>Terminal</span><span id="terminal-session">-</span></div>
+          <div id="terminals"></div>
+        </div>
+        <div id="chat">
+          <div class="pane-title"><span>Agent Messages</span></div>
+          <div id="chat-log"></div>
+          <div id="chat-input">
+            <input id="chat-box" type="text" placeholder="发送消息给 agent(上下文跨任务累积)…" autocomplete="off">
+            <button id="chat-send">发送</button>
+          </div>
+        </div>
+      </section>
+    </main>
   </div>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>

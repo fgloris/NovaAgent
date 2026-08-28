@@ -9,6 +9,7 @@ const state = {
   current: null,  // 当前选中的 sid
   terminals: {},  // sid -> {term, fit}
   outSeq: {},     // sid -> 已写入的最新输出 seq
+  unread: {},     // sid -> 后台 session 新输出块数量
   ws: null,
   pollTimer: null,
   keepTimer: null,
@@ -39,14 +40,35 @@ function statusColor(s) {
            ready: "running", exited: "exited", stopped: "stopped", failed: "failed" }[s] || "created";
 }
 
+function statusText(s) {
+  return { created: "待启动", starting: "启动中", running: "运行中",
+           ready: "就绪", exited: "已退出", stopped: "已停止", failed: "失败" }[s] || s;
+}
+
+function fmt(v) {
+  if (v === undefined || v === null || v === "") return "-";
+  if (Array.isArray(v)) return v.length ? v.join(", ") : "-";
+  return String(v);
+}
+
 function renderSessions() {
   const list = document.getElementById("session-list");
   list.innerHTML = "";
-  Object.values(state.sessions).forEach(s => {
+  const sessions = Object.values(state.sessions);
+  document.getElementById("session-count").textContent = sessions.length;
+  sessions.forEach(s => {
     const row = document.createElement("div");
     row.className = "sess" + (state.current === s.id ? " active" : "");
-    row.innerHTML = `<span class="dot ${statusColor(s.status)}"></span>
-      <span class="name">${esc(s.name)}</span>
+    row.innerHTML = `<div class="sess-main">
+        <span class="dot ${statusColor(s.status)}"></span>
+        <span class="name">${esc(s.name)}</span>
+        <span class="status">${esc(statusText(s.status))}</span>
+      </div>
+      <div class="sess-command">${esc(s.command || s.script || "")}</div>
+      <div class="sess-foot">
+        <span>${esc(s.id)}</span>
+        <span>${state.unread[s.id] ? "+" + state.unread[s.id] + " 输出" : (s.exit_code === null || s.exit_code === undefined ? "" : "exit " + esc(s.exit_code))}</span>
+      </div>
       <span class="ops">
         <button title="重启" data-act="restart" data-sid="${s.id}">↻</button>
         <button title="停止" data-act="stop" data-sid="${s.id}">■</button>
@@ -56,6 +78,7 @@ function renderSessions() {
     row.querySelector("[data-act=restart]").onclick = (e) => { e.stopPropagation(); doRestart(s.id); };
     list.appendChild(row);
   });
+  renderCurrent();
 }
 
 /* ---------------- xterm 终端 ---------------- */
@@ -67,6 +90,7 @@ function getTerm(sid) {
     const el = document.createElement("div");
     el.className = "terminal";
     el.dataset.sid = sid;
+    el.style.display = state.current === sid ? "" : "none";
     document.getElementById("terminals").appendChild(el);
     term.open(el);
     fit.fit();
@@ -85,16 +109,22 @@ function getTerm(sid) {
 
 function selectSession(sid) {
   state.current = sid;
+  state.unread[sid] = 0;
   document.querySelectorAll(".terminal").forEach(e => {
     e.style.display = e.dataset.sid === sid ? "" : "none";
   });
   getTerm(sid);
   renderSessions();
+  setTimeout(onResize, 0);
 }
 
 function writeOutput(sid, data) {
   const t = getTerm(sid);
   t.term.write(data);
+  if (state.current !== sid) {
+    state.unread[sid] = (state.unread[sid] || 0) + 1;
+    renderSessions();
+  }
 }
 
 function onResize() {
@@ -116,6 +146,31 @@ function appendChat(m) {
   div.innerHTML = `<span class="tag">[${esc(m.task_id || "?")}][${label}]</span>${esc(m.message)}`;
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
+}
+
+function renderCurrent() {
+  const s = state.sessions[state.current];
+  const setText = (id, text) => { document.getElementById(id).textContent = text; };
+  const restart = document.getElementById("btn-current-restart");
+  const stop = document.getElementById("btn-current-stop");
+  restart.disabled = !s;
+  stop.disabled = !s;
+  if (!s) {
+    setText("current-name", "未选择 session");
+    setText("current-meta", "启动 profile 后查看命令与输出");
+    setText("terminal-session", "-");
+    ["current-command", "current-workdir", "current-venv", "current-depends", "current-ready"].forEach(id => setText(id, "-"));
+    return;
+  }
+  const exit = s.exit_code === null || s.exit_code === undefined ? "" : ` · exit ${s.exit_code}`;
+  setText("current-name", s.name || s.id);
+  setText("current-meta", `${s.id} · ${statusText(s.status)}${exit}`);
+  setText("terminal-session", s.id);
+  setText("current-command", fmt(s.script || s.command));
+  setText("current-workdir", fmt(s.workdir));
+  setText("current-venv", fmt(s.venv));
+  setText("current-depends", fmt(s.depends_on));
+  setText("current-ready", fmt(s.wait_for));
 }
 
 async function sendChat() {
@@ -163,6 +218,7 @@ async function refreshSessions() {
       if (el) el.remove();
       delete state.terminals[sid];
       delete state.outSeq[sid];
+      delete state.unread[sid];
     }
   });
   s.forEach(x => {
@@ -173,6 +229,7 @@ async function refreshSessions() {
     }
     if (state.outSeq[x.id] === undefined) state.outSeq[x.id] = x.out_seq || 0;
   });
+  if (state.current && !state.sessions[state.current]) state.current = null;
   if (!state.current && s.length) selectSession(s[0].id);
   renderSessions();
 }
@@ -184,7 +241,9 @@ async function pollSessions() {
     const r = await api("/api/sessions");
     list = r.sessions || [];
   } catch (e) { return; }
+  const nextSessions = {};
   list.forEach(x => {
+    nextSessions[x.id] = x;
     state.sessions[x.id] = x;
     // 重启后 out_seq 归零:清掉旧终端,从 0 重新累积
     if (state.outSeq[x.id] !== undefined && x.out_seq < state.outSeq[x.id]) {
@@ -200,13 +259,16 @@ async function pollSessions() {
     }).catch(() => {});
   });
   Object.keys(state.terminals).forEach(sid => {
-    if (!state.sessions[sid]) {
+    if (!nextSessions[sid]) {
       const el = document.querySelector(`.terminal[data-sid="${sid}"]`);
       if (el) el.remove();
       delete state.terminals[sid];
       delete state.outSeq[sid];
+      delete state.unread[sid];
     }
   });
+  state.sessions = nextSessions;
+  if (state.current && !state.sessions[state.current]) state.current = null;
   if (!state.current && list.length) selectSession(list[0].id);
   renderSessions();
 }
@@ -262,14 +324,10 @@ function connectWS() {
       if (m.status === "stopped" || m.status === "starting") {
         // 重启后输出从零开始
         delete state.outSeq[m.id];
+        state.unread[m.id] = 0;
         if (state.terminals[m.id]) state.terminals[m.id].term.reset();
       }
-      if (state.sessions[m.id]) {
-        state.sessions[m.id].status = m.status;
-        state.sessions[m.id].exit_code = m.exit_code;
-      } else {
-        state.sessions[m.id] = { id: m.id, name: m.name, status: m.status, exit_code: m.exit_code, depends_on: m.depends_on };
-      }
+      state.sessions[m.id] = { ...(state.sessions[m.id] || {}), ...m };
       renderSessions();
     } else if (m.type === "chat") appendChat(m);
   };
@@ -282,6 +340,8 @@ function connectWS() {
 /* ---------------- init ---------------- */
 document.getElementById("btn-start").onclick = doStartProfile;
 document.getElementById("btn-stopall").onclick = doStopAll;
+document.getElementById("btn-current-stop").onclick = () => { if (state.current) doStop(state.current); };
+document.getElementById("btn-current-restart").onclick = () => { if (state.current) doRestart(state.current); };
 document.getElementById("chat-send").onclick = sendChat;
 document.getElementById("chat-box").addEventListener("keydown", e => { if (e.key === "Enter") sendChat(); });
 

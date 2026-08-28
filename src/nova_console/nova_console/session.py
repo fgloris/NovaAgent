@@ -234,6 +234,12 @@ class Session:
             "status": self.status,
             "exit_code": self.exit_code,
             "depends_on": self.depends_on,
+            "command": self.cfg.get("command"),
+            "script": self.script,
+            "workdir": self.cfg.get("workdir"),
+            "venv": self.cfg.get("venv"),
+            "pre": list(self.cfg.get("pre") or []),
+            "wait_for": self.cfg.get("wait_for"),
             "out_seq": self._out_seq,
             "tail": text[-4000:],
         }

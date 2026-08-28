@@ -80,6 +80,12 @@ class Orchestrator:
                 "status": sess.status,
                 "exit_code": sess.exit_code,
                 "depends_on": sess.depends_on,
+                "command": sess.cfg.get("command"),
+                "script": sess.script,
+                "workdir": sess.cfg.get("workdir"),
+                "venv": sess.cfg.get("venv"),
+                "pre": list(sess.cfg.get("pre") or []),
+                "wait_for": sess.cfg.get("wait_for"),
             }
         )
         # 状态变化 -> 尝试启动所有还处于 created 的依赖者
