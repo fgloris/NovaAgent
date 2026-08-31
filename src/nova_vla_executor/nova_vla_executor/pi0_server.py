@@ -142,15 +142,18 @@ def build_app(checkpoint_dir: str, model_id: str, obs_key_map: dict[str, str]):
             header_b, _, body = message.partition(b"\n")
             header = json.loads(header_b.decode("utf-8"))
             images = _split_body(header, body)
-            obs = {"prompt": header.get("instruction", "")}
-            # 客户端相机名 -> 模型 observation 键:精确匹配优先,其次子串匹配
-            # (实际相机名可能是 video_robot0_agentview_left,而配置键是 agentview)
+            instruction = header.get("instruction", "")
+            print(f"[pi0] instruction: {instruction!r}", flush=True)
+            obs = {"prompt": instruction}
+            # 客户端相机名 -> 模型 observation 键:必须精确匹配。
+            # 这里故意不做子串兜底,避免相机 key 配错时静默走错图像。
             for client_key, model_key in obs_key_map.items():
-                matched = [k for k in images if k == client_key] or [k for k in images if client_key in k]
-                if not matched:
-                    continue
-                obs[model_key] = images[matched[0]]
-                print(f"[pi0] obs map: {matched[0]} -> {model_key}", flush=True)
+                if client_key not in images:
+                    raise KeyError(
+                        f"missing image key {client_key!r}; available image keys={list(images.keys())}"
+                    )
+                obs[model_key] = images[client_key]
+                print(f"[pi0] obs map: {client_key} -> {model_key}", flush=True)
             state = header.get("state")
             if state is not None:
                 obs["observation/state"] = np.asarray(state, dtype=np.float32)
