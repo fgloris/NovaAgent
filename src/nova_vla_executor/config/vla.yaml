@@ -4,6 +4,14 @@ nova_vla_executor:
     request_timeout_sec: 60.0
     heartbeat_rate_hz: 1.0
 
+    # VLA 模型切换(pi0_server 启动时读取,改完重启 server 生效):
+    #   vla_model: pi0    -> pi0_robocasa_pretrain_human300,取 ROBOCASA_PI0_CHECKPOINT
+    #   vla_model: pi05   -> pi05_pretrain_human300,取 ROBOCASA_PI05_CHECKPOINT
+    #   ${VAR} 会在 pi0_server 里展开为对应环境变量;vla_executor_node 不读取这几项。
+    vla_model: pi05
+    pi0_checkpoint: "${ROBOCASA_PI0_CHECKPOINT}"
+    pi05_checkpoint: "${ROBOCASA_PI05_CHECKPOINT}"
+
     # 相机/state 键必须与运行中的 env 一致(robocasa groot fork)。
     camera_names: ["robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand"]
     state_keys: ["end_effector_position_relative", "end_effector_rotation_relative", "base_position", "base_rotation", "gripper_qpos"]

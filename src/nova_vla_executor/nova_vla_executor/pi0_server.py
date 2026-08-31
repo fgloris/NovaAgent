@@ -13,7 +13,7 @@
     {"action": [0.1, ...], "action_dim": 7}
 
 观测键映射:客户端发的相机名 -> 模型 config 的 observation 键。
-默认按 robocasa(pi0_robocasa_pretrain_human300,observation/image 第三视角 + observation/wrist_image 腕部)配置;
+默认按 robocasa(pi0_robocasa_pretrain_human300, observation/image 第三视角 + observation/wrist_image 腕部)配置;
 换模型可用 --obs-key-map 覆盖,例如:
     python pi0_server.py --model pi0_droid \
       --obs-key-map agentview=observation/exterior_image_1_left \
@@ -23,6 +23,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import time
 
 import numpy as np
@@ -38,6 +39,57 @@ DEFAULT_OBS_KEY_MAP = {
     "robot0_agentview_right": "observation/right_image",
     "robot0_eye_in_hand": "observation/wrist_image",
 }
+
+# vla.yaml 里的 vla_model 取值 -> openpi training config 名
+VLA_MODEL_IDS = {
+    "pi0": "pi0_robocasa_pretrain_human300",
+    "pi05": "pi05_pretrain_human300",
+}
+
+
+def _expand_env(s: str) -> str:
+    """展开 ${ENV_VAR} 占位符;未设置的环境变量展开为空串。"""
+    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", lambda m: os.environ.get(m.group(1), ""), s)
+
+
+def _default_config_path() -> str | None:
+    """自动定位 vla.yaml:优先同包 config,其次当前工作目录下的 src/nova_vla_executor/config/vla.yaml。"""
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(here, "..", "config", "vla.yaml"),
+        os.path.join(os.getcwd(), "src", "nova_vla_executor", "config", "vla.yaml"),
+    ]
+    for c in candidates:
+        c = os.path.normpath(c)
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def _resolve_model(checkpoint: str | None, model: str, config_path: str | None) -> tuple[str | None, str]:
+    """优先读 vla.yaml 的 vla_model 选择 checkpoint+模型;失败则回退命令行/环境变量。"""
+    if config_path and os.path.isfile(config_path):
+        try:
+            import yaml
+
+            with open(config_path, "r", encoding="utf-8") as f:
+                doc = yaml.safe_load(f) or {}
+            params = ((doc.get("nova_vla_executor") or {}).get("ros__parameters") or {})
+            vla_model = str(params.get("vla_model", "") or "").strip().lower()
+            if vla_model in VLA_MODEL_IDS:
+                ckpt = _expand_env(str(params.get(f"{vla_model}_checkpoint", "") or "")).strip()
+                if ckpt:
+                    checkpoint = os.path.expanduser(ckpt)
+                    model = VLA_MODEL_IDS[vla_model]
+                    print(
+                        f"[pi0] config {config_path}: vla_model={vla_model} -> model={model}, checkpoint={checkpoint}",
+                        flush=True,
+                    )
+                    return checkpoint, model
+                print(f"[pi0] warn: vla_model={vla_model} 但 {vla_model}_checkpoint 为空({config_path})", flush=True)
+        except Exception as exc:  # noqa: WPS462
+            print(f"[pi0] warn: 解析 config {config_path} 失败,回退命令行/环境变量: {exc}", flush=True)
+    return checkpoint, model
 
 
 def _ensure_robocasa_stub():
@@ -187,9 +239,25 @@ def _parse_obs_key_map(items: list[str]) -> dict[str, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="pi0 推理 server(robocasa/openpi环境,无 ROS2,WebSocket 二进制)")
-    parser.add_argument("--checkpoint", default=os.environ.get("ROBOCASA_CHECKPOINT_PATH"), help="openpi checkpoint 目录(新版,含 params/ 或 model.safetensors);默认取环境变量 ROBOCASA_CHECKPOINT_PATH")
-    parser.add_argument("--model", default="pi0_robocasa_pretrain_human300", help="openpi training config 名,默认 pi0_robocasa_pretrain_human300")
+    parser = argparse.ArgumentParser(description="pi0/pi0.5 推理 server(robocasa/openpi环境,无 ROS2,WebSocket 二进制)")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="vla.yaml 路径,内含 vla_model(pi0|pi05)与 pi0_checkpoint/pi05_checkpoint(${ENV} 自动展开);"
+        "默认自动定位 src/nova_vla_executor/config/vla.yaml",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="openpi checkpoint 目录(新版,含 params/ 或 model.safetensors);"
+        "默认由 vla.yaml 的 vla_model 决定取 ROBOCASA_PI0_CHECKPOINT / ROBOCASA_PI05_CHECKPOINT,"
+        "兜底取 ROBOCASA_CHECKPOINT_PATH",
+    )
+    parser.add_argument(
+        "--model",
+        default="pi0_robocasa_pretrain_human300",
+        help="openpi training config 名;有 vla.yaml 的 vla_model 时自动覆盖为 pi0_robocasa_pretrain_human300 / pi05_pretrain_human300",
+    )
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8767)
     parser.add_argument(
@@ -199,9 +267,19 @@ def main() -> int:
         help='相机名=模型observation键,如 agentview=observation/image;可多个',
     )
     args = parser.parse_args()
+    config_path = args.config or _default_config_path()
+    args.checkpoint, args.model = _resolve_model(args.checkpoint, args.model, config_path)
+    if args.checkpoint:
+        args.checkpoint = os.path.expanduser(args.checkpoint)
+    else:
+        # 没有 vla.yaml / 未指定时,按模型类型选环境变量
+        env_key = f"ROBOCASA_{args.model.upper()}_CHECKPOINT"
+        args.checkpoint = os.environ.get(env_key) or os.environ.get("ROBOCASA_CHECKPOINT_PATH")
     if not args.checkpoint:
-        parser.error("--checkpoint 未提供,且环境变量 ROBOCASA_CHECKPOINT_PATH 未设置")
-    args.checkpoint = os.path.expanduser(args.checkpoint)
+        parser.error(
+            "--checkpoint 未提供,且环境变量 ROBOCASA_PI0_CHECKPOINT / ROBOCASA_PI05_CHECKPOINT "
+            "(或旧 ROBOCASA_CHECKPOINT_PATH)未设置,且 vla.yaml 未配置"
+        )
 
     global APP
     obs_key_map = _parse_obs_key_map(args.obs_key_map)
