@@ -84,13 +84,19 @@ class VLAExecutorNode(Node):
         tool.name = "pi0_policy"
         tool.description = (
             "远程 pi0 VLA 策略:读取 /nova/env/* 最新相机/state,"
-            "调用远程推理并把动作回灌到仿真,直到任务成功或超时"
+            "调用远程推理并把动作回灌到仿真,直到任务成功或超时。"
+            "用法:instruction 必须为英文(模型只理解英文任务描述),中文指令先翻译成英文再传入;"
+            "措辞尽量贴近该场景训练用的英文 task_description(可参考环境 /nova/env/info 的 instruction),"
+            "否则模型会忽略指令、按视觉/状态做出默认动作。instruction 缺省时使用环境自带 task_description。"
         )
         tool.params_schema_json = json.dumps(
             {
                 "type": "object",
                 "properties": {
-                    "instruction": {"type": "string", "description": "任务语言指令(可选,缺省用环境提供的 task_description)"},
+                    "instruction": {
+                        "type": "string",
+                        "description": "任务语言指令,必须为英文(中文需先翻译成英文,并贴近环境英文 task_description);缺省用环境自带 task_description",
+                    },
                 },
             }
         )

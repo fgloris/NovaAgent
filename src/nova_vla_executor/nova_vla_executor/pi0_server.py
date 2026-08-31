@@ -145,8 +145,7 @@ def build_app(checkpoint_dir: str, model_id: str, obs_key_map: dict[str, str]):
             instruction = header.get("instruction", "")
             print(f"[pi0] instruction: {instruction!r}", flush=True)
             obs = {"prompt": instruction}
-            # 客户端相机名 -> 模型 observation 键:必须精确匹配。
-            # 这里故意不做子串兜底,避免相机 key 配错时静默走错图像。
+            # 客户端相机名 -> 模型 observation 匹配。
             for client_key, model_key in obs_key_map.items():
                 if client_key not in images:
                     raise KeyError(
@@ -188,7 +187,7 @@ def _parse_obs_key_map(items: list[str]) -> dict[str, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="pi0 推理 server(新版 openpi,无 ROS2,WebSocket 二进制)")
+    parser = argparse.ArgumentParser(description="pi0 推理 server(robocasa/openpi环境,无 ROS2,WebSocket 二进制)")
     parser.add_argument("--checkpoint", default=os.environ.get("ROBOCASA_CHECKPOINT_PATH"), help="openpi checkpoint 目录(新版,含 params/ 或 model.safetensors);默认取环境变量 ROBOCASA_CHECKPOINT_PATH")
     parser.add_argument("--model", default="pi0_robocasa_pretrain_human300", help="openpi training config 名,默认 pi0_robocasa_pretrain_human300")
     parser.add_argument("--host", default="0.0.0.0")

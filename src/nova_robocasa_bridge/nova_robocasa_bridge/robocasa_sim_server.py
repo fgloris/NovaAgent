@@ -132,6 +132,10 @@ class RoboCasaSession:
         assert self.env is not None
         obs, info = self.env.reset(seed=int(request.get("seed", 0)))
         obs = self._prepare_obs(obs, info)
+        print(
+            f"[robocasa] env reset: task description = {obs.get('state.instruction', '')!r}",
+            flush=True,
+        )
         return {
             "ok": True,
             "obs": obs,
