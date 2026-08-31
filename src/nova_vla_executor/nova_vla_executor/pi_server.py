@@ -15,7 +15,7 @@
 观测键映射:客户端发的相机名 -> 模型 config 的 observation 键。
 默认按 robocasa(pi0_robocasa_pretrain_human300, observation/image 第三视角 + observation/wrist_image 腕部)配置;
 换模型可用 --obs-key-map 覆盖,例如:
-    python pi0_server.py --model pi0_droid \
+    python pi_server.py --model pi0_droid \
       --obs-key-map agentview=observation/exterior_image_1_left \
                      robot0_eye_in_hand=observation/wrist_image_left
 """

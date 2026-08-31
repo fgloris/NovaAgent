@@ -15,6 +15,6 @@ uv pip install --no-deps chex==0.1.90   # 必须 --no-deps,否则会把 jax 0.5.
 ```
 - 运行 server：
 ```
-python pi0_server.py --checkpoint /path/to/checkpoint_dir --host 0.0.0.0 --port 8767
+python pi_server.py --checkpoint /path/to/checkpoint_dir --host 0.0.0.0 --port 8767
 # --model 默认 pi0_robocasa_pretrain_human300,obs-key-map 默认 agentview=observation/image robot0_eye_in_hand=observation/wrist_image
 ```

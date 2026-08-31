@@ -17,7 +17,7 @@ from std_msgs.msg import Float32MultiArray, String
 from nova_interfaces.action import MCPExecute
 from nova_interfaces.msg import ExecutorHeartbeat, ToolDescriptor
 
-from nova_vla_executor.pi0_bridge import RemotePi0Client
+from nova_vla_executor.pi_bridge import RemotePi0Client
 
 HEARTBEAT_TOPIC = "/nova/executors/heartbeat"
 ENV_NS = "/nova/env"

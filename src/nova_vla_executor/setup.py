@@ -21,7 +21,7 @@ setup(
     entry_points={
         "console_scripts": [
             "nova_vla_executor_node = nova_vla_executor.vla_executor_node:main",
-            "nova_pi0_server = nova_vla_executor.pi0_server:main",
+            "nova_pi_server = nova_vla_executor.pi_server:main",
         ],
     },
 )

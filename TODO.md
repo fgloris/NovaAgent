@@ -49,7 +49,7 @@ RoboCasa sim server listening on 127.0.0.1:8766
 
 ### 二、运行vla backend
 ```
-. ../env.sh && . ../openpi/.venv/bin/activate && python src/nova_vla_executor/nova_vla_executor/pi0_server.py
+. ../env.sh && . ../openpi/.venv/bin/activate && python src/nova_vla_executor/nova_vla_executor/pi_server.py
 ```
 等显示
 ```

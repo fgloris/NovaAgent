@@ -22,7 +22,7 @@ profiles:
         venv: ~/data1/lxy/openpi/.venv
         workdir: ~/data1/lxy/NovaAgent
         pre: ["source ~/data1/lxy/env.sh"]
-        command: python3 src/nova_vla_executor/nova_vla_executor/pi0_server.py
+        command: python3 src/nova_vla_executor/nova_vla_executor/pi_server.py
         wait_for: "Application startup complete"
         wait_timeout_sec: 300
 

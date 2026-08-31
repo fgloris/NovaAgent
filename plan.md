@@ -82,7 +82,7 @@ profiles:
         depends_on: [sim]
         venv: ~/data1/lxy/openpi/.venv
         workdir: ~/data1/lxy/NovaAgent
-        command: python3 src/nova_vla_executor/nova_vla_executor/pi0_server.py --checkpoint ...
+        command: python3 src/nova_vla_executor/nova_vla_executor/pi_server.py --checkpoint ...
         wait_for: "Application startup complete"
       - id: agentos
         name: AgentOS
