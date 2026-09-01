@@ -237,18 +237,53 @@ class RoboCasaSession:
     def _sim_info(self) -> dict[str, Any]:
         config = self.env_config or {}
         controller = ""
+        cameras: dict[str, Any] = {}
         if self.env is not None:
             try:
                 robots = self.env.unwrapped.robots
                 controller = robots[0].composite_controller.__class__.__name__
             except Exception:
                 controller = ""
+            cameras = self._camera_projections()
         return {
             "sim": "robocasa",
             "robots": config.get("robots", "PandaOmron"),
             "controller": controller,
             "env_id": config.get("env_id", ""),
+            "cameras": cameras,
         }
+
+    # 按 robosuite camera_utils 的约定计算各相机的投影矩阵,供外部(perception executor)三角化定位。
+    #   intrinsics: 3x3 内参(fx=fy=0.5*H/tan(fovy/2), 主点在图像中心)
+    #   projection: 3x4 世界->像素投影矩阵,project(X)=P@[X;1],归一化后 col=x/z, row=y/z
+    # 键为 mujoco 模型相机名,与 obs 的 video.* 键一致(robocasa 相机名即 model cam 名)。
+    def _camera_projections(self) -> dict[str, Any]:
+        config = self.env_config or {}
+        height = int(config.get("camera_height", 256))
+        width = int(config.get("camera_width", 256))
+        sim = self.env.unwrapped.sim
+        out: dict[str, Any] = {}
+        for cam_id, raw_name in enumerate(list(sim.model.cam_names)):
+            name = raw_name.decode() if isinstance(raw_name, bytes) else str(raw_name)
+            try:
+                fovy = float(sim.model.cam_fovy[cam_id])
+                f = 0.5 * height / np.tan(fovy * np.pi / 360)
+                k = np.array([[f, 0, width / 2], [0, f, height / 2], [0, 0, 1]])
+                cam_pos = sim.data.cam_xpos[cam_id]
+                cam_rot = sim.data.cam_xmat[cam_id].reshape(3, 3)
+                r_ext = np.eye(4)
+                r_ext[:3, :3] = cam_rot
+                r_ext[:3, 3] = cam_pos
+                axis_correction = np.diag([1.0, -1.0, -1.0, 1.0])
+                r_ext = r_ext @ axis_correction
+                p = k @ np.linalg.inv(r_ext)[:3, :4]
+                out[name] = {
+                    "intrinsics": k.tolist(),
+                    "projection": p.tolist(),
+                }
+            except Exception as exc:
+                print(f"[robocasa] camera {name} projection failed: {exc}", flush=True)
+        return out
 
 
 def _load_scene_config(path: str | None) -> dict[str, Any]:

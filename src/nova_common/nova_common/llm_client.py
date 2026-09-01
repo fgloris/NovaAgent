@@ -27,9 +27,14 @@ class LLMError(RuntimeError):
 
 
 class LLMClient:
-    def __init__(self, config: dict | None = None):
+    # vision=True/False 时只保留带(不带)vision: true 标记的 provider;
+    # vision=None 保持原行为(全部 provider 按序尝试)。
+    def __init__(self, config: dict | None = None, vision: bool | None = None):
         self.config = config or llm_config.load()
-        self.providers = self.config.get("providers", [])
+        providers = self.config.get("providers", [])
+        if vision is not None:
+            providers = [p for p in providers if p.get("vision", False) == vision]
+        self.providers = providers
 
     def chat(
         self,

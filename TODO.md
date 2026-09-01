@@ -94,3 +94,7 @@ ros2 service call /nova/env/reset std_srvs/srv/Trigger "{}"
 # 8.28
 1. 去掉过度设计部分。动态router，统一改成静态remapping，DAG也去掉。（已完成）
 2. 需要找一个适合用于判断任务是否成功的模型（verifier）
+
+# 8.31
+1. 首先，pi0和pi0.5对多元化的指令follow很差，几乎只能抓取。我需要看一眼，找出他们的共同缺点，给出我的动机。
+2. 现在我的路线当以VLM+preception tools+传统motion tools为主

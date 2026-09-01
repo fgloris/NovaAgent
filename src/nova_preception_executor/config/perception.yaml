@@ -1,0 +1,19 @@
+nova_preception_executor:
+  ros__parameters:
+    # 参与三角化的相机逻辑名(与 env 观测里的 video.* 键对应,用于匹配投影矩阵)
+    camera_names: ["robot0_agentview_left", "robot0_agentview_right"]
+
+    # 图像输入话题:不填时按 {env_ns}/camera/{name}/image_raw 推导;
+    # 显式填写时必须与 camera_names 一一对应(顺序一致)
+    image_topics: []
+
+    # 环境命名空间(推导图像话题与 /nova/env/info 服务用)
+    env_ns: "/nova/env"
+
+    heartbeat_rate_hz: 1.0
+
+    # VLM 定位默认参数(工具调用参数可逐次覆盖)
+    grid_size: 8
+    max_rounds: 5
+    max_restarts: 2
+    max_reproj_error_px: 25.0

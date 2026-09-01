@@ -163,6 +163,7 @@ class AgentLoop:
                     return
                 args_text = json.dumps(args, ensure_ascii=False)
                 self._emit(task_id, "working", f"调用 {name}: {args_text}", False, kind="tool_call")
+                args = self._with_context(args)
                 content = self._run_tool(name, args, task_id)
                 print(f"[agent_loop] task={task_id} tool={name} result={content[:200]}", flush=True)
                 if content.startswith("工具执行失败"):
@@ -182,10 +183,26 @@ class AgentLoop:
                 skill = args.get("skill", "")
                 contents = self.skills.load([skill])
                 return contents.get(skill) or f"未找到 skill: {skill}"
-            result = self.adapter.execute(name, args, trace_id=task_id)
+            result = self.adapter.execute(name, args, trace_id=task_id, timeout_sec=300.0)
             return json.dumps(result, ensure_ascii=False)
         except Exception as exc:
             return f"工具执行失败: {exc}"
+
+    # 把最近对话历史序列化注入工具参数(_agent_context),供 executor 里的 VLM 工具继承上下文。
+    # 只取最近 CONTEXT_TAIL 条消息,并限制总长度,避免每次工具调用都全量搬运历史。
+    CONTEXT_TAIL = 30
+    CONTEXT_MAX_CHARS = 8000
+
+    def _with_context(self, args: dict) -> dict:
+        recent = self.messages[-self.CONTEXT_TAIL:]
+        try:
+            text = json.dumps(recent, ensure_ascii=False)
+            if len(text) > self.CONTEXT_MAX_CHARS:
+                text = text[-self.CONTEXT_MAX_CHARS:]
+            args = {**args, "_agent_context": text}
+        except Exception:
+            pass
+        return args
 
     @staticmethod
     def _parse_args(tc) -> dict:

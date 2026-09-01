@@ -9,6 +9,9 @@ from ament_index_python.packages import get_package_share_directory
 def generate_launch_description():
     skills_dir = get_package_share_directory("nova_agentos") + "/skills"
     vla_config = Path(get_package_share_directory("nova_vla_executor")) / "config" / "vla.yaml"
+    perception_config = (
+        Path(get_package_share_directory("nova_preception_executor")) / "config" / "perception.yaml"
+    )
     return LaunchDescription(
         [
             Node(
@@ -23,6 +26,13 @@ def generate_launch_description():
                 executable="nova_executor_manager_node",
                 name="nova_executor_manager",
                 output="screen",
+            ),
+            Node(
+                package="nova_preception_executor",
+                executable="nova_preception_executor_node",
+                name="nova_preception_executor",
+                output="screen",
+                parameters=[str(perception_config)],
             ),
             Node(
                 package="nova_agentos",

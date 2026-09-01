@@ -2,8 +2,8 @@ robocasa_bridge:
   ros__parameters:
     env_id: "robocasa/PickPlaceCounterToCabinet"
     seed: 0
-    camera_width: 256
-    camera_height: 256
+    camera_width: 512
+    camera_height: 512
     # 桥步进频率 = replan_steps / 单次推理耗时。推理约 4.5s、replan_steps=5 → 1.1Hz。
     # 推理期间 executor 会发零动作保持机器人静止,此频率只影响墙钟快慢与仿真时间利用率。
     publish_rate_hz: 1.1
