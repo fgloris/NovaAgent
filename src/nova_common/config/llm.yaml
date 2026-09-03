@@ -10,7 +10,7 @@ providers:
     vision: true
     max_tokens: 128000
     temperature: 0.1
-    timeout_sec: 60.0
+    timeout_sec: 240.0
 
   - name: deepseek
     kind: openai

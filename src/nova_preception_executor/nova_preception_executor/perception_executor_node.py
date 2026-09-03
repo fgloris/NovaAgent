@@ -91,20 +91,33 @@ class PerceptionExecutorNode(Node):
                 Image, topic, self._make_cam_cb(cam), _CAM_QOS
             )
 
+        # debug 话题配置:off=不发布;sub=有订阅者才发布;on=总是发布
+        self.declare_parameter("vlm_debug_mode", "sub")
+        mode = str(self.get_parameter("vlm_debug_mode").value).strip().lower()
+        if mode not in ("off", "sub", "on"):
+            raise RuntimeError(f"vlm_debug_mode 只支持 off|sub|on, 收到 {mode!r}")
+        self._debug_mode = mode
+
+        # 文本回合话题 + 每相机绘制图话题(实际话题 = {vlm_input_topic}/{相机名})
         self.declare_parameter("vlm_round_topic", "/nova/perception/vlm_round")
         self._round_topic = str(self.get_parameter("vlm_round_topic").value).strip()
-        self.declare_parameter("vlm_input_topic", "/nova/perception/vlm_input_image")
-        self._input_topic = str(self.get_parameter("vlm_input_topic").value).strip()
+        self.declare_parameter("vlm_input_topic", "/nova/perception/vlm_input")
+        self._input_base = str(self.get_parameter("vlm_input_topic").value).strip().rstrip("/")
 
         self._info_cg = MutuallyExclusiveCallbackGroup()
         self._info_client = self.create_client(
             EnvInfo, self.env_info_srv, callback_group=self._info_cg
         )
         self._llm = LLMClient(vision=True)
-        if self._round_topic:
-            self._round_pub = self.create_publisher(String, self._round_topic, 1)
-        if self._input_topic:
-            self._input_pub = self.create_publisher(Image, self._input_topic, 5)
+        self._round_pub = None
+        self._cam_pubs: dict[str, Any] = {}
+        if self._debug_mode != "off":
+            if self._round_topic:
+                self._round_pub = self.create_publisher(String, self._round_topic, 1)
+            if self._input_base:
+                for cam in self.camera_names:
+                    topic = f"{self._input_base}/{cam}"
+                    self._cam_pubs[cam] = self.create_publisher(Image, topic, 5)
 
         self._action_server = ActionServer(
             self,
@@ -117,7 +130,8 @@ class PerceptionExecutorNode(Node):
         self._publish_heartbeat()
         self.get_logger().info(
             f"感知 executor 就绪,相机={self.camera_names}, "
-            f"话题={list(self.image_topics.values())}, LLM vision providers={[p.get('name') for p in self._llm.providers]}"
+            f"话题={list(self.image_topics.values())}, LLM vision providers={[p.get('name') for p in self._llm.providers]}, "
+            f"vlm_debug_mode={self._debug_mode}, vlm 图像话题={[f'{self._input_base}/{c}' for c in self._cam_pubs]}"
         )
 
     def _publish_heartbeat(self) -> None:
@@ -232,26 +246,41 @@ class PerceptionExecutorNode(Node):
             on_round=self._publish_vlm_round,
         )
 
-    # VlmLocator 每轮回调:prompt/回复发布到 vlm_round(JSON);绘制图按相机逐个发布为 Image
+    # debug 话题是否该发:on 恒发;sub 有订阅者才发;off 时 publisher 未创建
+    def _want_debug_pub(self, pub) -> bool:
+        if pub is None:
+            return False
+        if self._debug_mode == "on":
+            return True
+        if self._debug_mode == "sub":
+            return pub.get_subscription_count() > 0
+        return False
+
+    # VlmLocator 每轮回调:绘制图按相机发到各自话题,回合文本发到 vlm_round
     def _publish_vlm_round(self, payload: dict) -> None:
         task_id = str(payload.get("task_id", ""))
         round_tag = str(payload.get("round", ""))
+        if self._debug_mode != "off":
+            prompt = str(payload.get("prompt", ""))
+            reply = str(payload.get("reply", ""))
+            self.get_logger().info(
+                f"[vlm] task={task_id} round={round_tag}\nprompt: {prompt}\nreply: {reply}"
+            )
         for cam, url in (payload.get("images") or {}).items():
-            img_pub = getattr(self, "_input_pub", None)
-            if img_pub is None:
-                break
+            pub = self._cam_pubs.get(cam)
+            if not self._want_debug_pub(pub):
+                continue
             try:
                 frame_id = f"{task_id}|{round_tag}|{cam}"
-                img_pub.publish(self._data_url_to_image_msg(url, frame_id))
+                pub.publish(self._data_url_to_image_msg(url, frame_id))
             except Exception as exc:
                 self.get_logger().warn(f"发布 vlm 输入图 {cam} 失败: {exc}")
-        pub = getattr(self, "_round_pub", None)
-        if pub is None:
+        if not self._want_debug_pub(self._round_pub):
             return
         try:
             msg = String()
             msg.data = json.dumps(payload, ensure_ascii=False)
-            pub.publish(msg)
+            self._round_pub.publish(msg)
         except Exception as exc:
             self.get_logger().warn(f"发布 vlm_round 失败: {exc}")
 

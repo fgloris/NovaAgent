@@ -17,8 +17,7 @@ from nova_preception_executor.vision_geometry import (
     triangulate,
 )
 
-_GRAY = (150, 150, 150)
-_BLACK = (0, 0, 0)
+_RED = (255, 0, 0)
 
 
 def _extract_text(result) -> str:
@@ -156,18 +155,19 @@ class VlmLocator:
     # ---------- 第2轮起:像素微调 ----------
     def _refine_round(self) -> None:
         marked = {
-            c: self._annotate(self.images[c], self.last_points.get(c), self.proj_px.get(c))
+            c: self._annotate(self.images[c], self.proj_px.get(c))
             for c in self.cams
         }
         lines = []
         for c in self.cams:
-            if c in self.last_points and c in self.proj_px:
-                px = self.last_points[c]
-                rp = self.proj_px[c]
-                lines.append(
-                    f"相机 {c}: 上一轮你给出的点是灰色,坐标 ({px[0]:.1f}, {px[1]:.1f});"
-                    f"系统重投影点是黑色,坐标 ({rp[0]:.1f}, {rp[1]:.1f})"
-                )
+            rp = self.proj_px.get(c)
+            if rp is None:
+                continue
+            px = self.last_points.get(c)
+            text = f"相机 {c}: 系统重投影位置已画为红色空心圆,坐标 ({rp[0]:.1f}, {rp[1]:.1f})"
+            if px is not None:
+                text += f";上一轮你给出的像素 ({px[0]:.1f}, {px[1]:.1f}) 不再画点"
+            lines.append(text)
         prompt = (
             f"继续定位物体\"{self.object}\"。\n"
             + "\n".join(lines)
@@ -220,17 +220,16 @@ class VlmLocator:
             return
         self._refine_round()
 
-    # 标注图像:灰点 = 上一轮 VLM 点,黑点 = 重投影点
-    def _annotate(self, img, prev_pixel, proj_pixel):
+    # 标注图像:仅把系统重投影位置画成红色空心圆(不遮挡物体),上一轮 VLM 像素点不再绘制
+    def _annotate(self, img, proj_pixel):
         out = img.copy()
-        if prev_pixel is not None:
-            out = draw_marker(out, prev_pixel, _GRAY, radius=8)
         if proj_pixel is not None:
-            out = draw_marker(out, proj_pixel, _BLACK, radius=8)
+            out = draw_marker(out, proj_pixel, _RED, radius=8)
         return out
 
-    # 发一轮 VLM 请求:组装多图内容,记录历史并通过 on_round 发布本轮输入/输出
+    # 发一轮 VLM 请求:组装多图内容,记录历史(prompt+reply)并通过 on_round 发布本轮输入/输出
     def _ask_vlm(self, prompt: str, imgs: dict[str, object], round_tag: str) -> str:
+        self._push("prompt", f"[{round_tag}] {prompt}")
         content: list[dict] = [{"type": "text", "text": prompt}]
         urls: dict[str, str] = {}
         for c in self.cams:

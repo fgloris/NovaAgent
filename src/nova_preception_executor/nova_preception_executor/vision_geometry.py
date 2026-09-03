@@ -99,14 +99,17 @@ def draw_grid(img, grid_size, line_color=(200, 200, 200), label_color=(0, 200, 0
 
 
 def draw_marker(img, pixel, color, radius=8, label=None):
+    # 画空心圆圈(仅外圈着色),不遮挡圈内物体
     out = img.copy()
     u, v = float(pixel[0]), float(pixel[1])
-    x, y = int(round(u)), int(round(v))
     h, w = out.shape[:2]
-    cv, cu = np.clip(y, 0, h - 1), np.clip(x, 0, w - 1)
+    cv, cu = int(round(u)), int(round(v))
+    cv, cu = int(np.clip(cv, 0, h - 1)), int(np.clip(cu, 0, w - 1))
     rr, cc = np.ogrid[:h, :w]
-    mask = (rr - cv) ** 2 + (cc - cu) ** 2 <= radius * radius
-    out[mask] = color
+    d2 = (rr - cv) ** 2 + (cc - cu) ** 2
+    thick = max(1, int(round(radius * 0.25)))
+    ring = (d2 <= radius * radius) & (d2 >= (radius - thick) ** 2)
+    out[ring] = color
     if label:
         _put_label(out, label, cu, max(cv - radius - 8, 0), color)
     return out
