@@ -1,6 +1,6 @@
 # VLM 多视图定位循环状态机。
 #   第1轮:图上叠网格,让 VLM 给出各图网格单元(默认取中心像素)-> 三角化 -> 重投影误差检查。
-#   第2轮起:网格仍画在图上,但直接让 VLM 给像素坐标;上一轮点(灰)与重投影点(黑)带坐标画在图上。
+#   第2轮起:网格仍画在图上,让 VLM 直接给像素坐标;图只画系统重投影位置的红色空心圆。
 #   误差过大(多视图不一致)-> 丢本轮历史重来(回到网格轮);直到 VLM 满意(DONE)或达到上限。
 import json
 import time
@@ -14,6 +14,7 @@ from nova_preception_executor.vision_geometry import (
     parse_pixel,
     project_point,
     reprojection_errors,
+    sent_image_size,
     triangulate,
 )
 
@@ -63,7 +64,7 @@ class VlmLocator:
         grid_size: int = 8,
         max_rounds: int = 5,
         max_restarts: int = 2,
-        max_reproj_error_px: float = 25.0,
+        max_reproj_error_px: float = 15.0,
     ) -> None:
         self.llm = llm
         self.grid_size = max(2, int(grid_size))
@@ -95,7 +96,6 @@ class VlmLocator:
         self.restarts = 0
         self.error_px = None
         self.position = None
-        self.last_points: dict[str, tuple[float, float]] = {}
         self.proj_px: dict[str, tuple[float, float]] = {}
 
         while self.position is None:
@@ -123,7 +123,6 @@ class VlmLocator:
             "iterations": self.iterations,
             "restarts": self.restarts,
             "camera_names": self.cams,
-            "final_points": {c: [round(p[0], 1), round(p[1], 1)] for c, p in self.last_points.items()},
             "history": self.history,
         }
 
@@ -163,17 +162,16 @@ class VlmLocator:
             rp = self.proj_px.get(c)
             if rp is None:
                 continue
-            px = self.last_points.get(c)
-            text = f"相机 {c}: 系统重投影位置已画为红色空心圆,坐标 ({rp[0]:.1f}, {rp[1]:.1f})"
-            if px is not None:
-                text += f";上一轮你给出的像素 ({px[0]:.1f}, {px[1]:.1f}) 不再画点"
-            lines.append(text)
+            lines.append(
+                f"相机 {c}: ({rp[0]:.1f}, {rp[1]:.1f})"
+            )
         prompt = (
-            f"继续定位物体\"{self.object}\"。\n"
+            f"通过微调重投影像素位置继续微调对物体\"{self.object}\"的定位。\n"
+            +f"上一轮定位位置已在每张图上重投影为红色空心圆，位置分别为：\n"
             + "\n".join(lines)
-            + f"\n网格仍画在图上作为参考。请给出调整后的像素坐标(图像左上角为原点,向右为x,向下为y),"
-            f"每张图一个,严格返回 JSON: {{\"<相机名>\": [x, y], ...}};"
-            f"若你认为当前定位已足够准确,严格返回 {{\"done\": true}}。不要输出其它内容。"
+            + f"\n请给出每张图调整后的像素坐标(图像左上角为原点,向右为x,向下为y),"
+            f"严格返回 JSON: {{\"<相机名>\": [x, y], ...}};"
+            f"若你认为当前所有红色空心圆均指向同一个任务目标物体，则定位已足够准确,严格返回 {{\"done\": true}}。不要输出其它内容。"
         )
         reply = self._ask_vlm(prompt, marked, f"refine{self.iterations + 1}")
         data = _extract_json(reply)
@@ -199,7 +197,6 @@ class VlmLocator:
         errors = reprojection_errors(pts, projs, X)
         self.error_px = sum(errors) / len(errors)
         self.position = X
-        self.last_points = dict(points)
         self.proj_px = {
             c: project_point(self.projections[c], X)
             for c in self.cams
@@ -229,7 +226,12 @@ class VlmLocator:
 
     # 发一轮 VLM 请求:组装多图内容,记录历史(prompt+reply)并通过 on_round 发布本轮输入/输出
     def _ask_vlm(self, prompt: str, imgs: dict[str, object], round_tag: str) -> str:
+        # 提示词末尾追加各图实际发送尺寸(encode 可能已等比缩小),坐标以发送图为准
+        sizes = {c: sent_image_size(*imgs[c].shape[:2]) for c in self.cams}
+        size_text = "、".join(f"{c}={w}x{h}" for c, (w, h) in sizes.items())
+        prompt = f"{prompt}\n\n图像像素尺寸:{size_text}"
         self._push("prompt", f"[{round_tag}] {prompt}")
+        self._dump_history(round_tag)
         content: list[dict] = [{"type": "text", "text": prompt}]
         urls: dict[str, str] = {}
         for c in self.cams:
@@ -245,7 +247,7 @@ class VlmLocator:
                 1,
                 {
                     "role": "user",
-                    "content": f"以下是 agent 的对话上下文(供你理解任务意图,不要重复):\n{self.agent_context}",
+                    "content": f"以下是 agent 的对话上下文(供你理解任务意图):\n{self.agent_context}",
                 },
             )
         t0 = time.time()
@@ -271,3 +273,12 @@ class VlmLocator:
 
     def _push(self, role: str, content: str) -> None:
         self.history.append({"role": role, "content": content})
+
+    # debug:每次发请求前把完整历史(prompt/vlm/system)打到进程日志
+    def _dump_history(self, round_tag: str) -> None:
+        print(f"\n[vlm_loop] ==== task={self.task_id} round={round_tag} 请求历史(共 {len(self.history)} 条) ====", flush=True)
+        for idx, entry in enumerate(self.history):
+            text = str(entry.get("content", "")).replace("\n", "\\n")
+            if len(text) > 2000:
+                text = text[:2000] + f"...(截断,共{len(str(entry.get('content', '')))}字)"
+            print(f"[vlm_loop] [{idx}][{entry.get('role')}] {text}", flush=True)

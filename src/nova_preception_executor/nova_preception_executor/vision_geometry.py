@@ -134,13 +134,24 @@ def _put_label(img, text, x, y, color):
     return img
 
 
-def encode_image(img, max_size=768, quality=80):
+_ENCODE_MAX_SIZE = 768
+
+
+def sent_image_size(height, width, max_size=_ENCODE_MAX_SIZE):
+    # 等比缩小规则与 encode_image 一致:只缩不放;返回发送给 VLM 的实际 (宽, 高)
+    scale = min(1.0, max_size / max(height, width))
+    if scale < 1.0:
+        return int(round(width * scale)), int(round(height * scale))
+    return int(width), int(height)
+
+
+def encode_image(img, max_size=_ENCODE_MAX_SIZE, quality=80):
     if img.dtype != np.uint8:
         img = np.clip(img, 0, 255).astype(np.uint8)
     h, w = img.shape[:2]
-    scale = min(1.0, max_size / max(h, w))
-    if scale < 1.0:
-        img = _resize(img, int(round(w * scale)), int(round(h * scale)))
+    cw, ch = sent_image_size(h, w, max_size)
+    if (cw, ch) != (w, h):
+        img = _resize(img, cw, ch)
     buf = io.BytesIO()
     from PIL import Image as PILImage
     PILImage.fromarray(img, mode="RGB").save(buf, format="JPEG", quality=quality)
