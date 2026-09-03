@@ -253,6 +253,20 @@ class RoboCasaSession:
             "cameras": cameras,
         }
 
+    # 相机名取自 mujoco 原生 MjModel。robosuite 的 sim.model 是 binding_utils 包装类,
+    # 底层 mujoco.MjModel 在 ._model,mj_id2name 只接受它(枚举需先转 int)。
+    @staticmethod
+    def _camera_names(model: Any) -> list[str]:
+        base = getattr(model, "_model", None) or model
+        if hasattr(base, "cam_names"):
+            raw_names = base.cam_names
+            return [(c.decode() if isinstance(c, bytes) else str(c)) for c in raw_names]
+        import mujoco
+
+        cam_type = getattr(mujoco.mjtObj, "mjOBJ_CAMERA", None)
+        cam_type = int(cam_type) if cam_type is not None else 6
+        return [mujoco.mj_id2name(base, cam_type, i) or "" for i in range(int(base.ncam))]
+
     # 按 robosuite camera_utils 的约定计算各相机的投影矩阵,供外部(perception executor)三角化定位。
     #   intrinsics: 3x3 内参(fx=fy=0.5*H/tan(fovy/2), 主点在图像中心)
     #   projection: 3x4 世界->像素投影矩阵,project(X)=P@[X;1],归一化后 col=x/z, row=y/z
@@ -262,11 +276,13 @@ class RoboCasaSession:
         height = int(config.get("camera_height", 256))
         width = int(config.get("camera_width", 256))
         sim = self.env.unwrapped.sim
+        model = sim.model
         out: dict[str, Any] = {}
-        for cam_id, raw_name in enumerate(list(sim.model.cam_names)):
-            name = raw_name.decode() if isinstance(raw_name, bytes) else str(raw_name)
+        for cam_id, name in enumerate(self._camera_names(model)):
+            if not name:
+                continue
             try:
-                fovy = float(sim.model.cam_fovy[cam_id])
+                fovy = float(model.cam_fovy[cam_id])
                 f = 0.5 * height / np.tan(fovy * np.pi / 360)
                 k = np.array([[f, 0, width / 2], [0, f, height / 2], [0, 0, 1]])
                 cam_pos = sim.data.cam_xpos[cam_id]

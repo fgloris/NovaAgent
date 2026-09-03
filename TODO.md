@@ -26,7 +26,7 @@ opencode -s ses_fcc87a673ffes3DTdEUZaCf9Fn
 
 # 8.27
 
-## 闭环测试(在NovaAgent/执行)
+## 闭环测试(在服务器NovaAgent/执行)
 
 ### 一、运行robocasa仿真
 terminal 1:
@@ -97,4 +97,34 @@ ros2 service call /nova/env/reset std_srvs/srv/Trigger "{}"
 
 # 8.31
 1. 首先，pi0和pi0.5对多元化的指令follow很差，几乎只能抓取。我需要看一眼，找出他们的共同缺点，给出我的动机。
-2. 现在我的路线当以VLM+preception tools+传统motion tools为主
+   现在我的路线当以VLM+preception tools+math tools+传统motion tools为主
+2. 下一步是测试preception tools
+
+# 9.3
+本地测试流程
+
+### 仿真
+```bash
+conda activate robocasa
+python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
+```
+
+```bash
+. install/setup.sh && ros2 run nova_robocasa_bridge robocasa_bridge_node
+```
+
+### foxglove
+```bash
+. install/setup.sh && ros2 run foxglove_bridge foxglove_bridge 
+```
+
+### preception tools
+```bash
+. install/setup.sh && ros2 run nova_preception_executor nova_preception_executor_node
+```
+
+### AgentOS
+```bash
+. install/setup.sh
+```
+快速设计一个编排！

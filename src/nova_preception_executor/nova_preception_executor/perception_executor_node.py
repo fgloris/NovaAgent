@@ -91,11 +91,20 @@ class PerceptionExecutorNode(Node):
                 Image, topic, self._make_cam_cb(cam), _CAM_QOS
             )
 
+        self.declare_parameter("vlm_round_topic", "/nova/perception/vlm_round")
+        self._round_topic = str(self.get_parameter("vlm_round_topic").value).strip()
+        self.declare_parameter("vlm_input_topic", "/nova/perception/vlm_input_image")
+        self._input_topic = str(self.get_parameter("vlm_input_topic").value).strip()
+
         self._info_cg = MutuallyExclusiveCallbackGroup()
         self._info_client = self.create_client(
             EnvInfo, self.env_info_srv, callback_group=self._info_cg
         )
         self._llm = LLMClient(vision=True)
+        if self._round_topic:
+            self._round_pub = self.create_publisher(String, self._round_topic, 1)
+        if self._input_topic:
+            self._input_pub = self.create_publisher(Image, self._input_topic, 5)
 
         self._action_server = ActionServer(
             self,
@@ -163,7 +172,7 @@ class PerceptionExecutorNode(Node):
         goal = goal_handle.request
         try:
             params = json.loads(goal.params_json) if goal.params_json else {}
-            result_json = self._locate(params)
+            result_json = self._locate(params, task_id=goal.trace_id)
             result = MCPExecute.Result()
             result.success = True
             result.result_json = json.dumps(result_json, ensure_ascii=False)
@@ -180,7 +189,7 @@ class PerceptionExecutorNode(Node):
             self.get_logger().error(f"locate_object_3d 失败: {exc}")
             return result
 
-    def _locate(self, params: dict) -> dict:
+    def _locate(self, params: dict, task_id: str = "") -> dict:
         object_desc = str(params.get("object", "")).strip()
         if not object_desc:
             return {"ok": False, "error": "缺少 object 参数"}
@@ -201,7 +210,11 @@ class PerceptionExecutorNode(Node):
                 self.get_logger().warn(f"相机 {cam} 无投影矩阵(可用:{list(projections)})")
                 continue
             images[cam] = frame
-            projs[cam] = projections[key]
+            # cameras 值形如 {"intrinsics":..., "projection": 3x4},三角化只用到 projection
+            entry = projections[key]
+            if isinstance(entry, dict) and "projection" in entry:
+                entry = entry["projection"]
+            projs[cam] = entry
 
         locator = VlmLocator(
             self._llm,
@@ -215,7 +228,53 @@ class PerceptionExecutorNode(Node):
             images,
             projs,
             agent_context=str(params.get("_agent_context", "")),
+            task_id=task_id,
+            on_round=self._publish_vlm_round,
         )
+
+    # VlmLocator 每轮回调:prompt/回复发布到 vlm_round(JSON);绘制图按相机逐个发布为 Image
+    def _publish_vlm_round(self, payload: dict) -> None:
+        task_id = str(payload.get("task_id", ""))
+        round_tag = str(payload.get("round", ""))
+        for cam, url in (payload.get("images") or {}).items():
+            img_pub = getattr(self, "_input_pub", None)
+            if img_pub is None:
+                break
+            try:
+                frame_id = f"{task_id}|{round_tag}|{cam}"
+                img_pub.publish(self._data_url_to_image_msg(url, frame_id))
+            except Exception as exc:
+                self.get_logger().warn(f"发布 vlm 输入图 {cam} 失败: {exc}")
+        pub = getattr(self, "_round_pub", None)
+        if pub is None:
+            return
+        try:
+            msg = String()
+            msg.data = json.dumps(payload, ensure_ascii=False)
+            pub.publish(msg)
+        except Exception as exc:
+            self.get_logger().warn(f"发布 vlm_round 失败: {exc}")
+
+    @staticmethod
+    def _data_url_to_image_msg(data_url: str, frame_id: str) -> Image:
+        import base64
+        import io
+
+        from PIL import Image as PILImage
+
+        b64 = data_url.split(",", 1)[1]
+        jpeg = base64.b64decode(b64)
+        image = np.asarray(PILImage.open(io.BytesIO(jpeg)).convert("RGB"))
+        image = np.ascontiguousarray(image)
+        msg = Image()
+        msg.header.frame_id = frame_id
+        msg.height = int(image.shape[0])
+        msg.width = int(image.shape[1])
+        msg.encoding = "rgb8"
+        msg.is_bigendian = False
+        msg.step = int(image.shape[1] * 3)
+        msg.data = image.tobytes()
+        return msg
 
     def destroy_node(self) -> bool:
         return super().destroy_node()

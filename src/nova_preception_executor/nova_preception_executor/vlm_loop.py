@@ -78,6 +78,8 @@ class VlmLocator:
         images: dict[str, object],
         projections: dict[str, object],
         agent_context: str = "",
+        task_id: str = "",
+        on_round=None,
     ) -> dict:
         cams = [c for c in images if c in projections]
         if len(cams) < 2:
@@ -87,6 +89,8 @@ class VlmLocator:
         self.cams = cams
         self.object = object_desc
         self.agent_context = (agent_context or "").strip()
+        self.task_id = task_id or ""
+        self.on_round = on_round
         self.history: list[dict] = []
         self.iterations = 0
         self.restarts = 0
@@ -225,13 +229,14 @@ class VlmLocator:
             out = draw_marker(out, proj_pixel, _BLACK, radius=8)
         return out
 
-    # 发一轮 VLM 请求:组装多图内容,记录历史
+    # 发一轮 VLM 请求:组装多图内容,记录历史并通过 on_round 发布本轮输入/输出
     def _ask_vlm(self, prompt: str, imgs: dict[str, object], round_tag: str) -> str:
         content: list[dict] = [{"type": "text", "text": prompt}]
+        urls: dict[str, str] = {}
         for c in self.cams:
-            content.append(
-                {"type": "image_url", "image_url": {"url": encode_image(imgs[c])}}
-            )
+            url = encode_image(imgs[c])
+            urls[c] = url
+            content.append({"type": "image_url", "image_url": {"url": url}})
         messages: list[dict] = [
             {"role": "system", "content": "你是严谨的物体定位辅助,只输出要求的 JSON,不要解释。"},
             {"role": "user", "content": content},
@@ -246,8 +251,23 @@ class VlmLocator:
             )
         t0 = time.time()
         result = self.llm.chat(messages, temperature=0.0, max_tokens=1024)
+        elapsed = time.time() - t0
         reply = _extract_text(result)
-        self._push("vlm", f"[{round_tag}][{time.time() - t0:.1f}s] {reply}")
+        self._push("vlm", f"[{round_tag}][{elapsed:.1f}s] {reply}")
+        if self.on_round is not None:
+            try:
+                self.on_round(
+                    {
+                        "round": round_tag,
+                        "task_id": self.task_id,
+                        "duration_sec": round(elapsed, 2),
+                        "prompt": prompt,
+                        "reply": reply,
+                        "images": urls,
+                    }
+                )
+            except Exception:
+                pass
         return reply
 
     def _push(self, role: str, content: str) -> None:
