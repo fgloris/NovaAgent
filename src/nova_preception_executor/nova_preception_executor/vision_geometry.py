@@ -102,6 +102,8 @@ def draw_marker(img, pixel, color, radius=8, label=None):
     # 画空心圆圈(仅外圈着色),不遮挡圈内物体
     out = img.copy()
     u, v = float(pixel[0]), float(pixel[1])
+    if not (np.isfinite(u) and np.isfinite(v)):
+        return out
     h, w = out.shape[:2]
     cv, cu = int(round(u)), int(round(v))
     cv, cu = int(np.clip(cv, 0, h - 1)), int(np.clip(cu, 0, w - 1))

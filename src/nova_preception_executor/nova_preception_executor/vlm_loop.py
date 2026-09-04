@@ -1,9 +1,15 @@
 # VLM 多视图定位循环状态机。
-#   第1轮:图上叠网格,让 VLM 给出各图网格单元(默认取中心像素)-> 三角化 -> 重投影误差检查。
-#   第2轮起:网格仍画在图上,让 VLM 直接给像素坐标;图只画系统重投影位置的红色空心圆。
-#   误差过大(多视图不一致)-> 丢本轮历史重来(回到网格轮);直到 VLM 满意(DONE)或达到上限。
+#   第1轮:图上叠网格,让 VLM 给出各图网格单元(默认取中心像素)-> DLT 三角化 -> 重投影误差检查。
+#   每轮分别维护两套像素位置:VLM 原始标注点(蓝圈)与系统 3D 定位在各图的重投影点(红圈)。
+#   第2轮起:让 VLM 给出把蓝色圈移向物体所需的像素偏移量(dx, dy),由系统累加到蓝点后重新三角化。
+#   结束条件 = 重投影误差低于阈值(蓝/红圈一致)且至少完成一轮像素微调;满足后才允许 VLM 返回 done,
+#   否则提示词不给 done,只让其继续优化。
+#   无效轮(VLM 提前 done/偏移量解析失败/三角化非有限)不再退回网格:保留上一轮正常定位状态,
+#   直接重发一轮 refine 重试;重试耗尽或达到最大轮数时,若仍不满足结束条件则整次定位判失败。
 import json
 import time
+
+import numpy as np
 
 from nova_preception_executor.vision_geometry import (
     draw_grid,
@@ -18,7 +24,8 @@ from nova_preception_executor.vision_geometry import (
     triangulate,
 )
 
-_RED = (255, 0, 0)
+_RED = (255, 100, 100)
+_BLUE = (100, 100, 255)
 
 
 def _extract_text(result) -> str:
@@ -64,7 +71,7 @@ class VlmLocator:
         grid_size: int = 8,
         max_rounds: int = 5,
         max_restarts: int = 2,
-        max_reproj_error_px: float = 15.0,
+        max_reproj_error_px: float = 40.0,
     ) -> None:
         self.llm = llm
         self.grid_size = max(2, int(grid_size))
@@ -95,7 +102,10 @@ class VlmLocator:
         self.iterations = 0
         self.restarts = 0
         self.error_px = None
+        self.converged = False
         self.position = None
+        self._failed_reason = ""
+        self.observed: dict[str, tuple[float, float]] = {}
         self.proj_px: dict[str, tuple[float, float]] = {}
 
         while self.position is None:
@@ -110,21 +120,31 @@ class VlmLocator:
         if self.position is None:
             return {
                 "ok": False,
-                "error": "定位失败(网格/像素解析失败或重投影误差始终超限)",
+                "error": self._failed_reason or "定位失败(网格解析多次失败,或未满足结束条件)",
                 "iterations": self.iterations,
                 "restarts": self.restarts,
-                "history": self.history,
+            }
+        if self._failed_reason:
+            return {
+                "ok": False,
+                "error": self._failed_reason,
+                "iterations": self.iterations,
+                "restarts": self.restarts,
             }
         return {
             "ok": True,
             "object": self.object,
             "position": self.position,
             "reprojection_error_px": round(self.error_px, 2),
+            "converged": bool(self.converged),
             "iterations": self.iterations,
             "restarts": self.restarts,
             "camera_names": self.cams,
-            "history": self.history,
         }
+
+    # 结束条件:多视图一致(误差低于阈值)且至少经历过一轮像素微调,防止 grid 粗定位结果直接判 done
+    def _ready(self) -> bool:
+        return bool(self.converged and self.iterations >= 2)
 
     # ---------- 第1轮:网格定位 ----------
     def _grid_round(self) -> None:
@@ -151,77 +171,155 @@ class VlmLocator:
             self._push("vlm", f"{c}: 网格 {cell[0]}-{cell[1]} -> 像素 ({points[c][0]:.1f}, {points[c][1]:.1f})")
         self._settle(points)
 
-    # ---------- 第2轮起:像素微调 ----------
+    # ---------- 第2轮起:以蓝色圈为基准的偏移量微调 ----------
     def _refine_round(self) -> None:
         marked = {
-            c: self._annotate(self.images[c], self.proj_px.get(c))
+            c: self._annotate(self.images[c], self.observed.get(c), self.proj_px.get(c))
             for c in self.cams
         }
         lines = []
         for c in self.cams:
+            bl = self.observed.get(c)
             rp = self.proj_px.get(c)
-            if rp is None:
+            if bl is None or rp is None:
                 continue
             lines.append(
-                f"相机 {c}: ({rp[0]:.1f}, {rp[1]:.1f})"
+                f"相机 {c}: 蓝色圈(你的像素点)=({bl[0]:.1f}, {bl[1]:.1f}),"
+                f"红色圈(系统重投影)=({rp[0]:.1f}, {rp[1]:.1f})"
+            )
+        if self._ready():
+            tail = (
+                "若你认为蓝色圈都已对准目标物体、"
+                "无需再移动,可直接返回 {\"done\": true} 结束;否则继续给出偏移量。"
+            )
+        elif self.converged:
+            tail = (
+                "当前各视图已一致,但还需一轮像素微调把蓝色圈对准物体以确认,"
+                "请给出偏移量,不要返回 done。"
+            )
+        else:
+            tail = (
+                "当前各视图重投影误差仍高于阈值(蓝圈与红圈不一致),尚未达到结束条件,"
+                "请继续给出偏移量,直到多视图一致。"
             )
         prompt = (
-            f"通过微调重投影像素位置继续微调对物体\"{self.object}\"的定位。\n"
-            +f"上一轮定位位置已在每张图上重投影为红色空心圆，位置分别为：\n"
+            f"继续优化对物体\"{self.object}\"的定位。\n"
             + "\n".join(lines)
-            + f"\n请给出每张图调整后的像素坐标(图像左上角为原点,向右为x,向下为y),"
-            f"严格返回 JSON: {{\"<相机名>\": [x, y], ...}};"
-            f"若你认为当前所有红色空心圆均指向同一个任务目标物体，则定位已足够准确,严格返回 {{\"done\": true}}。不要输出其它内容。"
+            + f"\n蓝色空心圆是你在对应图上标注的像素位置,红色空心圆是系统由这些点三角化后"
+            f"的 3D 点在每张图的重投影;两圆重合表示多视图判断一致。\n"
+            f"请把蓝色圆圆心移动到目标物体中心,给出每张图所需的像素偏移 [dx, dy]"
+            f"(图像左上角为原点,向右为 +x,向下为 +y,无需移动给 [0, 0]),"
+            f"严格返回 JSON: {{\"<相机名>\": [dx, dy], ...}}。{tail}不要输出其它内容。"
         )
         reply = self._ask_vlm(prompt, marked, f"refine{self.iterations + 1}")
         data = _extract_json(reply)
         if isinstance(data, dict) and data.get("done"):
-            self._push("vlm", "DONE")
-            return
-        points: dict[str, tuple[float, float]] = {}
-        for c in self.cams:
-            px = parse_pixel(data.get(c)) if isinstance(data, dict) else None
-            if px is None:
-                self._push("vlm", reply)
-                self._push("system", "像素解析失败(未得到有效 [x, y])。")
+            if self._ready():
+                self._push("vlm", "DONE")
                 return
-            points[c] = px
-        self._push("vlm", " | ".join(f"{c}: ({p[0]:.1f}, {p[1]:.1f})" for c, p in points.items()))
-        self._settle(points)
+            self._push("vlm", reply)
+            if not self._retry_refine_or_adopt("VLM 提前返回 done 但尚未满足结束条件,不采纳。"):
+                return
+            self._refine_round()
+            return
+        new_points: dict[str, tuple[float, float]] = {}
+        deltas: dict[str, tuple[float, float]] = {}
+        for c in self.cams:
+            delta = parse_pixel(data.get(c)) if isinstance(data, dict) else None
+            if delta is None:
+                self._push("vlm", reply)
+                if not self._retry_refine_or_adopt("偏移量解析失败,未得到有效 [dx, dy]。"):
+                    return
+                self._refine_round()
+                return
+            base = self.observed.get(c)
+            if base is None:
+                if not self._retry_refine_or_adopt(f"相机 {c} 缺少基准蓝色点。"):
+                    return
+                self._refine_round()
+                return
+            deltas[c] = delta
+            # VLM 的偏移量在"发送图"坐标系(可能被等比缩小),按缩放比回乘到原始像素后再三角化
+            h, w = self.images[c].shape[:2]
+            sw, sh = sent_image_size(h, w)
+            new_points[c] = (base[0] + delta[0] * (w / sw), base[1] + delta[1] * (h / sh))
+        self._push(
+            "vlm",
+            " | ".join(f"{c}: Δ({deltas[c][0]:+.1f}, {deltas[c][1]:+.1f})" for c in self.cams),
+        )
+        self._settle(new_points)
 
-    # 三角化 + 重投影误差检查 + 记录反投影点
+    # 无效轮不再退回网格:保留上一轮正常定位状态(蓝点/红圈/position 均未动)重发一轮 refine。
+    # 返回 False 表示重试预算耗尽;已达结束条件则采纳上一轮结果,否则整次定位判失败。
+    def _retry_refine_or_adopt(self, reason: str) -> bool:
+        self.restarts += 1
+        if self.restarts > self.max_restarts:
+            if self._ready():
+                self._push(
+                    "system",
+                    f"{reason}已重试 {self.max_restarts} 次仍无效,采纳上一轮正常定位结果结束。",
+                )
+            else:
+                self._failed_reason = f"{reason}重试耗尽且未满足结束条件(多视图一致 + 至少一轮像素微调)。"
+                self._push("system", self._failed_reason)
+            return False
+        self._push(
+            "system",
+            f"{reason}丢弃本轮,仍从上一轮正常状态继续微调(第 {self.restarts} 次重试)。",
+        )
+        return True
+
+    # DLT 三角化 + 重投影误差检查 + 记录原始点(蓝)与反投影点(红)
     def _settle(self, points: dict[str, tuple[float, float]]) -> None:
         pts = [points[c] for c in self.cams]
         projs = [self.projections[c] for c in self.cams]
         X = triangulate(pts, projs)
         errors = reprojection_errors(pts, projs, X)
+        if not (np.isfinite(X).all() and all(np.isfinite(e) for e in errors)):
+            self._push("system", "三角化/重投影出现非有限值(点可能在相机后方)。")
+            if not self.observed:
+                # 尚无上一轮正常定位(冷启动网格轮失败),只能重新网格定位
+                self._push("system", "尚无上一轮正常定位,重新用网格单元粗定位。")
+                self.position = None
+                return
+            if not self._retry_refine_or_adopt("应用本轮偏移后三角化失败。"):
+                return
+            self._refine_round()
+            return
         self.error_px = sum(errors) / len(errors)
+        self.converged = self.error_px <= self.max_reproj_error_px
         self.position = X
+        self.observed = dict(points)
         self.proj_px = {
             c: project_point(self.projections[c], X)
             for c in self.cams
         }
         self.iterations += 1
-        self._push("system", f"三角化 X={[round(v, 3) for v in X]}, 重投影误差={self.error_px:.2f}px")
+        state = "一致" if self.converged else f"不一致(阈值 {self.max_reproj_error_px:.0f}px)"
+        self._push(
+            "system",
+            f"三角化 X={[round(v, 3) for v in X]}, 平均重投影误差={self.error_px:.2f}px [{state}]",
+        )
 
-        if self.error_px > self.max_reproj_error_px:
-            self._push(
-                "system",
-                f"重投影误差 {self.error_px:.2f}px 超过阈值 {self.max_reproj_error_px}px,"
-                "视图间不一致,丢弃本轮结果重来。",
-            )
-            self.position = None
-            return
         if self.iterations >= self.max_rounds:
-            self._push("system", "达到最大调整轮数,采纳当前结果。")
+            if self._ready():
+                self._push("system", "达到最大调整轮数,已多视图一致,采纳当前结果。")
+            else:
+                self._failed_reason = (
+                    f"达到最大轮数 {self.max_rounds} 仍未多视图一致"
+                    f"(误差 {self.error_px:.2f}px > 阈值 {self.max_reproj_error_px:.0f}px)。"
+                )
+                self._push("system", self._failed_reason)
             return
         self._refine_round()
 
-    # 标注图像:仅把系统重投影位置画成红色空心圆(不遮挡物体),上一轮 VLM 像素点不再绘制
-    def _annotate(self, img, proj_pixel):
+    # 标注图像:蓝色空心圆 = VLM 标注的原始像素点;红色空心圆 = 系统重投影点
+    def _annotate(self, img, blue_pixel, red_pixel):
         out = img.copy()
-        if proj_pixel is not None:
-            out = draw_marker(out, proj_pixel, _RED, radius=8)
+        if blue_pixel is not None:
+            out = draw_marker(out, blue_pixel, _BLUE, radius=8)
+        if red_pixel is not None:
+            out = draw_marker(out, red_pixel, _RED, radius=8)
         return out
 
     # 发一轮 VLM 请求:组装多图内容,记录历史(prompt+reply)并通过 on_round 发布本轮输入/输出

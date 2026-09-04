@@ -141,9 +141,9 @@ class PerceptionExecutorNode(Node):
         tool.name = "locate_object_3d"
         tool.description = (
             "多视图 VLM 3D 定位:读取 /nova/env/* 最新相机帧与投影矩阵,"
-            "先让 VLM 在各图上用网格单元粗定位,再三角化并反投影,"
-            "把上一轮点(灰)与重投影点(黑)画回图上让 VLM 迭代微调像素坐标,"
-            "直到其满意,返回物体 3D 世界坐标(x,y,z)。"
+            "先让 VLM 在各图上用网格单元粗定位并 DLT 三角化,再把结果画回图:"
+            "蓝圈=VLM 标注的像素点,红圈=系统重投影;让 VLM 以像素偏移量迭代微调,"
+            "多视图误差低于阈值且完成像素微调后才允许其结束,返回物体 3D 世界坐标(x,y,z)。"
         )
         tool.params_schema_json = json.dumps(TOOL_SCHEMA, ensure_ascii=False)
         tool.action_server_name = f"/{self.get_name()}/locate_object_3d/execute"

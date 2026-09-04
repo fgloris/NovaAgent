@@ -16,4 +16,4 @@ nova_preception_executor:
     grid_size: 8
     max_rounds: 5
     max_restarts: 2
-    max_reproj_error_px: 25.0
+    max_reproj_error_px: 45.0
