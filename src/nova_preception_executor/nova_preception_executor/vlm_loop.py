@@ -3,11 +3,10 @@
 #   每轮分别维护两套像素位置:VLM 原始标注点(蓝圈)与系统 3D 定位在各图的重投影点(红圈)。
 #   发给 VLM 的图只画蓝圈(它自己标的位置),红圈仅画在调试图上供人工观察。
 #   第2轮起:让 VLM 给出把蓝色圈移向物体所需的像素偏移量(dx, dy),由系统累加到蓝点后重新三角化。
-#   结束条件 = 重投影误差低于阈值(蓝/红圈一致)且至少完成一轮像素微调;满足后才允许 VLM 返回 done,
-#   否则提示词不给 done,只让其继续优化。
-#   无效轮(两视图像素点不对应同一空间点导致误差超阈/非有限、VLM 提前 done、偏移量解析失败)
-#   不采纳本轮结果:保留上一轮一致状态直接重发 refine 重试,避免红圈散开;
-#   仅冷启动网格轮失效时才重新网格粗定位;重试耗尽或达到最大轮数仍不满足结束条件则判失败。
+#   设计:每一轮(即使误差超阈值)都照常采纳、继续迭代,交由 VLM 自行修正跨视图不一致;
+#   converged 仅表示"本轮误差<=阈值",结束条件 = converged 且至少完成一轮像素微调,
+#   满足后才允许 VLM 返回 done,否则提示词不给 done、只让其继续优化。
+#   仅非有限值(点可能在相机后方)才回退上一轮状态重试;重试耗尽或达到最大轮数仍不满足结束条件则判失败。
 import json
 import time
 
@@ -230,11 +229,11 @@ class VlmLocator:
             )
         elif self.converged:
             tail = (
-                "请把蓝色圈对准物体再给出一轮偏移量确认,不要返回 done。"
+                "请再给出一轮偏移量,确保蓝色圈对准物体,不要返回 done。"
             )
         else:
             tail = (
-                "当前多视图尚未一致,请继续给出偏移量把蓝色圈移到目标物体中心,"
+                "请继续给出偏移量把蓝色圈移到目标物体中心,"
                 "不要返回 done。"
             )
         prompt = (
@@ -305,7 +304,8 @@ class VlmLocator:
         return True
 
     # DLT 三角化 + 重投影误差检查 + 记录原始点(蓝)与反投影点(红)。
-    # 【临时改动】误差超阈值不再回退,照常采纳继续迭代;仅非有限值(点可能在相机后方)回退。
+    # 误差超阈值不回退、照常采纳并继续迭代,converged 只标记本轮是否达标;
+    # 仅非有限值(点可能在相机后方)才回退上一轮状态重试。
     def _settle(self, points: dict[str, tuple[float, float]]) -> None:
         pts = [points[c] for c in self.cams]
         projs = [self.projections[c] for c in self.cams]
@@ -377,7 +377,8 @@ class VlmLocator:
         size_text = "、".join(f"{c}={w}x{h}" for c, (w, h) in sizes.items())
         prompt = f"{prompt}\n\n图像像素尺寸:{size_text}"
         self._push("prompt", f"[{round_tag}] {prompt}")
-        self._dump_history(round_tag)
+        print(f"\n[vlm_loop] ==== task={self.task_id} round={round_tag} 发送给模型的请求 ====", flush=True)
+        print(prompt, flush=True)
         content: list[dict] = [{"type": "text", "text": prompt}]
         pub_imgs = debug_imgs if debug_imgs is not None else imgs
         urls: dict[str, str] = {}
@@ -432,12 +433,3 @@ class VlmLocator:
 
     def _push(self, role: str, content: str) -> None:
         self.history.append({"role": role, "content": content})
-
-    # debug:每次发请求前把完整历史(prompt/vlm/system)打到进程日志
-    def _dump_history(self, round_tag: str) -> None:
-        print(f"\n[vlm_loop] ==== task={self.task_id} round={round_tag} 请求历史(共 {len(self.history)} 条) ====", flush=True)
-        for idx, entry in enumerate(self.history):
-            text = str(entry.get("content", "")).replace("\n", "\\n")
-            if len(text) > 2000:
-                text = text[:2000] + f"...(截断,共{len(str(entry.get('content', '')))}字)"
-            print(f"[vlm_loop] [{idx}][{entry.get('role')}] {text}", flush=True)

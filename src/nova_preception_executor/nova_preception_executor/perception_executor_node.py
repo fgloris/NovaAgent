@@ -40,7 +40,7 @@ TOOL_SCHEMA = {
         "grid_size": {"type": "integer", "description": "网格划分大小,默认取节点参数(默认 8,即 8x8)"},
         "max_rounds": {"type": "integer", "description": "最大调整轮数,默认取节点参数(默认 5)"},
         "max_restarts": {"type": "integer", "description": "重投影不一致时的最大重来次数,默认取节点参数(默认 2)"},
-        "max_reproj_error_px": {"type": "number", "description": "重投影误差阈值(像素),超过则丢弃重来,默认取节点参数(默认 25)"},
+        "max_reproj_error_px": {"type": "number", "description": "重投影误差阈值(像素),低于该值视为多视图一致才允许结束,默认取节点参数(默认 25)"},
     },
     "required": ["object"],
 }
