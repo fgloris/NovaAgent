@@ -92,7 +92,7 @@ class PerceptionExecutorNode(Node):
             )
 
         # debug 话题配置:off=不发布;sub=有订阅者才发布;on=总是发布
-        self.declare_parameter("vlm_debug_mode", "sub")
+        self.declare_parameter("vlm_debug_mode", "on")
         mode = str(self.get_parameter("vlm_debug_mode").value).strip().lower()
         if mode not in ("off", "sub", "on"):
             raise RuntimeError(f"vlm_debug_mode 只支持 off|sub|on, 收到 {mode!r}")
@@ -141,9 +141,10 @@ class PerceptionExecutorNode(Node):
         tool.name = "locate_object_3d"
         tool.description = (
             "多视图 VLM 3D 定位:读取 /nova/env/* 最新相机帧与投影矩阵,"
-            "先让 VLM 在各图上用网格单元粗定位并 DLT 三角化,再把结果画回图:"
-            "蓝圈=VLM 标注的像素点,红圈=系统重投影;让 VLM 以像素偏移量迭代微调,"
-            "多视图误差低于阈值且完成像素微调后才允许其结束,返回物体 3D 世界坐标(x,y,z)。"
+            "先让 VLM 在各图上用网格单元粗定位并 DLT 三角化,再把结果画回调试图:"
+            "蓝圈=VLM 标注的像素点(发给 VLM 的图只画蓝圈),红圈=系统重投影(仅调试图);"
+            "让 VLM 以像素偏移量迭代微调,多视图误差低于阈值且完成像素微调后才允许其结束,"
+            "返回物体 3D 世界坐标(x,y,z)。"
         )
         tool.params_schema_json = json.dumps(TOOL_SCHEMA, ensure_ascii=False)
         tool.action_server_name = f"/{self.get_name()}/locate_object_3d/execute"
@@ -244,6 +245,7 @@ class PerceptionExecutorNode(Node):
             agent_context=str(params.get("_agent_context", "")),
             task_id=task_id,
             on_round=self._publish_vlm_round,
+            on_images=self._publish_vlm_images,
         )
 
     # debug 话题是否该发:on 恒发;sub 有订阅者才发;off 时 publisher 未创建
@@ -266,6 +268,20 @@ class PerceptionExecutorNode(Node):
             self.get_logger().info(
                 f"[vlm] task={task_id} round={round_tag}\nprompt: {prompt}\nreply: {reply}"
             )
+        self._publish_vlm_images(payload)
+        if not self._want_debug_pub(self._round_pub):
+            return
+        try:
+            msg = String()
+            msg.data = json.dumps(payload, ensure_ascii=False)
+            self._round_pub.publish(msg)
+        except Exception as exc:
+            self.get_logger().warn(f"发布 vlm_round 失败: {exc}")
+
+    # 只把标注图发到各相机 debug 话题(不写 vlm_round/日志),用于"发给模型前"推送
+    def _publish_vlm_images(self, payload: dict) -> None:
+        task_id = str(payload.get("task_id", ""))
+        round_tag = str(payload.get("round", ""))
         for cam, url in (payload.get("images") or {}).items():
             pub = self._cam_pubs.get(cam)
             if not self._want_debug_pub(pub):
@@ -275,14 +291,6 @@ class PerceptionExecutorNode(Node):
                 pub.publish(self._data_url_to_image_msg(url, frame_id))
             except Exception as exc:
                 self.get_logger().warn(f"发布 vlm 输入图 {cam} 失败: {exc}")
-        if not self._want_debug_pub(self._round_pub):
-            return
-        try:
-            msg = String()
-            msg.data = json.dumps(payload, ensure_ascii=False)
-            self._round_pub.publish(msg)
-        except Exception as exc:
-            self.get_logger().warn(f"发布 vlm_round 失败: {exc}")
 
     @staticmethod
     def _data_url_to_image_msg(data_url: str, frame_id: str) -> Image:

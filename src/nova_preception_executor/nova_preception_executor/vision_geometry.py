@@ -91,7 +91,8 @@ def draw_grid(img, grid_size, line_color=(200, 200, 200), label_color=(0, 200, 0
     cell_h, cell_w = h / grid_size, w / grid_size
     for r in range(grid_size):
         for c in range(grid_size):
-            label = f"{c + 1}-{r + 1}"
+            # 标签顺序与提示词/parse_grid_cell 一致:行-列(r+1 行, c+1 列)
+            label = f"{r + 1}-{c + 1}"
             x = int((c + 0.5) * cell_w)
             y = int((r + 0.5) * cell_h)
             _put_label(out, label, x, y, label_color)
@@ -105,8 +106,10 @@ def draw_marker(img, pixel, color, radius=8, label=None):
     if not (np.isfinite(u) and np.isfinite(v)):
         return out
     h, w = out.shape[:2]
-    cv, cu = int(round(u)), int(round(v))
-    cv, cu = int(np.clip(cv, 0, h - 1)), int(np.clip(cu, 0, w - 1))
+    cu = int(round(u))  # u = 横/列
+    cv = int(round(v))  # v = 纵/行
+    cu = int(np.clip(cu, 0, w - 1))
+    cv = int(np.clip(cv, 0, h - 1))
     rr, cc = np.ogrid[:h, :w]
     d2 = (rr - cv) ** 2 + (cc - cu) ** 2
     thick = max(1, int(round(radius * 0.25)))
