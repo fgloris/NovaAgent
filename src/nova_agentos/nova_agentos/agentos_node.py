@@ -141,7 +141,7 @@ class AgentosNode(Node):
             record = self.sessions.end(request.session_id)
             response.success = True
             response.archive_path = str(self.sessions.root / record.session_id)
-            response.message = "session 已结束，文件已保留"
+            response.message = f"session 已结束，文件已保留在 {response.archive_path}"
         except (FileNotFoundError, ValueError) as exc:
             response.success = False
             response.message = str(exc)

@@ -33,6 +33,7 @@ FINISH_TOOL = {
         },
     },
 }
+
 LOAD_SKILL_TOOL = {
     "type": "function",
     "function": {
@@ -46,7 +47,7 @@ LOAD_SKILL_TOOL = {
     },
 }
 
-
+# 运行单个任务
 class TaskRunner:
     def __init__(
         self,
@@ -76,6 +77,7 @@ class TaskRunner:
             tools = [LOAD_SKILL_TOOL, FINISH_TOOL] + to_llm_tools(descriptors)
             fails = 0
             for round_no in range(1, MAX_STEPS_PER_TASK + 1):
+                # 构造上下文： 会话 = 工具 + 先前任务上下文 + 系统提示 + Runtime Message
                 session = self.manager.get(self.task.session_id)
                 previous = self.manager.tasks(self.task.session_id)
                 session.context["_tasks"] = [
@@ -121,6 +123,8 @@ class TaskRunner:
                 if not result.tool_calls:
                     self._finish("success", result.content or "模型返回文本，任务等待后续指令")
                     return
+                
+                # 处理 tool calls
                 for tool_call in result.tool_calls:
                     name = tool_call["function"]["name"]
                     args = self._parse_args(tool_call)
@@ -204,10 +208,12 @@ class TaskRunner:
         except (json.JSONDecodeError, TypeError, KeyError):
             return {}
 
+    # 用于debug, 向 /agent_msg 发送话题
     def _event(self, kind: str, status: str, message: str, done: bool = False) -> None:
         if self.on_state:
             self.on_state(self.task.task_id, self.task.session_id, status, message, done, kind)
 
+    # 结束此次任务
     def _finish(self, outcome: str, summary: str) -> None:
         self.task.finish(outcome, summary)
         self.manager.save_task(self.task)
@@ -221,7 +227,7 @@ class TaskRunner:
 
 
 class AgentLoop:
-    """Global FIFO queue; session state remains isolated on disk."""
+    # 全局任务 FIFO 队列
 
     def __init__(
         self,
