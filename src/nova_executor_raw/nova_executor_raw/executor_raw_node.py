@@ -62,6 +62,7 @@ TOOLS = {
 
 class DefaultBackend:
     def describe(self):
+        """返回后备 backend 的能力和安全限制。"""
         return {
             "robot_id": "robot0",
             "robot_base": "robot0_base",
@@ -72,15 +73,19 @@ class DefaultBackend:
         }
 
     def get_current_pose(self, robot_id):
+        """返回指定机器人的当前 EEF 位姿。"""
         return Pose([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
 
     def transform_pose(self, pose, source, target):
+        """在坐标系之间转换位姿；后备实现保持位姿不变。"""
         return pose
 
     def validate_trajectory(self, traj, constraints):
+        """执行 backend 专属的轨迹执行前检查。"""
         return None
 
     def execute_trajectory(self, traj, feedback_callback, cancel_callback):
+        """执行轨迹，同时发布反馈并响应取消请求。"""
         for i, _ in enumerate(traj):
             if cancel_callback():
                 return {"success": False, "error": "cancelled"}
@@ -91,6 +96,7 @@ class DefaultBackend:
 
 class ExecutorRawNode(Node):
     def __init__(self):
+        """创建 MCP action server 并启动能力心跳。"""
         super().__init__("nova_executor_raw")
         self.backend = DefaultBackend()
         self._servers = []
@@ -100,7 +106,7 @@ class ExecutorRawNode(Node):
                     self,
                     MCPExecute,
                     f"/{self.get_name()}/{name}/execute",
-                    self._cb(name),
+                    self._callback(name),
                 )
             )
         self.pub = self.create_publisher(
@@ -110,6 +116,7 @@ class ExecutorRawNode(Node):
         self._heartbeat()
 
     def _heartbeat(self):
+        """发布当前 EEF 工具的描述信息。"""
         hb = ExecutorHeartbeat()
         hb.executor_name = self.get_name()
         for n, (d, s) in TOOLS.items():
@@ -121,10 +128,12 @@ class ExecutorRawNode(Node):
             hb.tools.append(t)
         self.pub.publish(hb)
 
-    def _cb(self, name):
-        def cb(gh):
+    def _callback(self, name):
+        """构造绑定指定工具名称的 action 回调。"""
+        def callback(goal_handle):
+            """校验、插值、预检查并执行一个 action goal。"""
             try:
-                p = json.loads(gh.request.params_json or "{}")
+                p = json.loads(goal_handle.request.params_json or "{}")
                 b = self.backend.describe()
                 rid = p.get("robot_id", b.get("robot_id"))
                 frame = p.get("frame_id", b.get("robot_base"))
@@ -170,34 +179,35 @@ class ExecutorRawNode(Node):
                 if vr:
                     raise ValueError(str(vr))
 
-                def fb(i, total, status, msg):
+                def feedback(i, total, status, msg):
                     f = MCPExecute.Feedback()
                     f.status = status
                     f.message = f"{msg} ({i + 1}/{total})"
-                    gh.publish_feedback(f)
+                    goal_handle.publish_feedback(f)
 
                 out = self.backend.execute_trajectory(
-                    traj, fb, lambda: gh.is_cancel_requested
+                    traj, feedback, lambda: goal_handle.is_cancel_requested
                 )
                 r = MCPExecute.Result()
                 r.success = out.get("success", False)
                 r.error = out.get("error", "")
                 r.result_json = json.dumps(out)
-                gh.canceled() if r.error == "cancelled" else (
-                    gh.succeed() if r.success else gh.abort()
+                goal_handle.canceled() if r.error == "cancelled" else (
+                    goal_handle.succeed() if r.success else goal_handle.abort()
                 )
                 return r
             except Exception as e:
                 r = MCPExecute.Result()
                 r.success = False
                 r.error = str(e)
-                gh.abort()
+                goal_handle.abort()
                 return r
 
-        return cb
+        return callback
 
 
 def main(args=None):
+    """初始化 ROS、运行 executor 节点并安全关闭。"""
     rclpy.init(args=args)
     n = ExecutorRawNode()
     rclpy.spin(n)

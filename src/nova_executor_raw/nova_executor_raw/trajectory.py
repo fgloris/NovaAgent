@@ -1,4 +1,4 @@
-"""Pure Python pose validation/interpolation utilities."""
+"""纯 Python 位姿校验与插值工具。"""
 
 import math
 from dataclasses import dataclass
@@ -6,15 +6,18 @@ from dataclasses import dataclass
 
 @dataclass
 class Pose:
+    """表示笛卡尔位置和四元数姿态。"""
     position: list
     orientation: list
 
 
 def _finite(v):
+    """判断序列中的所有数值是否为有限数。"""
     return all(math.isfinite(float(x)) for x in v)
 
 
 def normalize(q):
+    """归一化四元数，输入非法时抛出 invalid_pose。"""
     if not isinstance(q, list) or len(q) != 4 or not _finite(q):
         raise ValueError("invalid_pose")
     n = math.sqrt(sum(float(x) * float(x) for x in q))
@@ -24,6 +27,7 @@ def normalize(q):
 
 
 def quat_mul(a, b):
+    """按 XYZW 顺序计算两个四元数的乘积。"""
     ax, ay, az, aw = a
     bx, by, bz, bw = b
     return [
@@ -35,10 +39,12 @@ def quat_mul(a, b):
 
 
 def rotate(q, v):
+    """使用四元数旋转三维向量。"""
     return quat_mul(quat_mul(q, [*v, 0]), [-q[0], -q[1], -q[2], q[3]])[:3]
 
 
 def compose(base, delta):
+    """将相对位姿增量合成到基准位姿上。"""
     r = rotate(base.orientation, delta.position)
     return Pose(
         [base.position[i] + r[i] for i in range(3)],
@@ -47,6 +53,7 @@ def compose(base, delta):
 
 
 def slerp(a, b, t):
+    """在两个四元数之间执行球面线性插值。"""
     a, b = normalize(a), normalize(b)
     d = sum(x * y for x, y in zip(a, b))
     if d < 0:
@@ -62,6 +69,7 @@ def slerp(a, b, t):
 
 
 def interpolate(poses, linear_speed=0.1, angular_speed=0.5, hz=20):
+    """生成位置线性、姿态 SLERP 的离散轨迹点。"""
     if not poses:
         raise ValueError("empty_waypoints")
     out = []
@@ -87,6 +95,7 @@ def interpolate(poses, linear_speed=0.1, angular_speed=0.5, hz=20):
 
 
 def validate_waypoints(data, max_count=100):
+    """校验绝对路径点 JSON，并返回已归一化的 Pose 对象。"""
     if not isinstance(data, list) or not data:
         raise ValueError("empty_waypoints")
     if len(data) > max_count:
