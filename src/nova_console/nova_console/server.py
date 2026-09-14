@@ -47,9 +47,10 @@ WEB_DIR = find_web_dir()
 
 class ConsoleRosNode(Node):
     # 只做聊天桥:订阅 agent_msg + 调 RunTask;会话编排是纯 Python,不依赖 ROS。
-    def __init__(self, agent_msg_topic: str, run_task_service: str) -> None:
+    def __init__(self, agent_msg_topic: str, run_task_service: str, session_id: str = "") -> None:
         super().__init__("nova_console")
         self.on_msg = None  # callable(TaskState),由 create_app 注入
+        self.session_id = session_id
         cg = MutuallyExclusiveCallbackGroup()
         self._run_client = self.create_client(RunTask, run_task_service, callback_group=cg)
         self.create_subscription(TaskState, agent_msg_topic, self._sub_cb, 10)
@@ -59,9 +60,13 @@ class ConsoleRosNode(Node):
             self.on_msg(msg)
 
     def send_message(self, instruction: str, timeout_sec: float = 15.0) -> str:
+        if not self.session_id:
+            raise RuntimeError("AgentOS requires a session_id")
         if not self._run_client.wait_for_service(timeout_sec=5.0):
             raise RuntimeError("RunTask 服务不可用")
-        fut = self._run_client.call_async(RunTask.Request(instruction=instruction))
+        fut = self._run_client.call_async(
+            RunTask.Request(session_id=self.session_id, instruction=instruction)
+        )
         deadline = time.time() + timeout_sec
         while rclpy.ok() and not fut.done():
             if time.time() > deadline:

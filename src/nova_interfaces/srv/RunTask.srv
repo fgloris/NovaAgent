@@ -1,5 +1,6 @@
 # 提交一条用户指令给 agentos(入队后立即返回,不阻塞)。
 # 任务状态经话题 /nova/agentos/task_state/t_{task_id} 观察。
+string session_id
 string instruction   # 用户指令
 ---
 string task_id    # 任务唯一标识

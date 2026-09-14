@@ -45,7 +45,14 @@ class McpAdapter:
             raise RuntimeError("查询工具列表超时")
         return future.result().tools
 
-    def execute(self, tool_name: str, params: dict, trace_id: str, timeout_sec: float = 120.0) -> dict:
+    def execute(
+        self,
+        tool_name: str,
+        params: dict,
+        trace_id: str,
+        timeout_sec: float = 120.0,
+        feedback_callback=None,
+    ) -> dict:
         if not self._client.wait_for_server(timeout_sec=10.0):
             raise RuntimeError(f"executor_manager action {self._client.action_name} 不可用")
         goal = MCPExecute.Goal()
@@ -53,7 +60,14 @@ class McpAdapter:
         goal.params_json = json.dumps(params, ensure_ascii=False)
         goal.trace_id = trace_id
 
-        send_future = self._client.send_goal_async(goal)
+        send_future = self._client.send_goal_async(
+            goal,
+            feedback_callback=(
+                lambda msg: feedback_callback(msg.feedback.status, msg.feedback.message)
+                if feedback_callback
+                else None
+            ),
+        )
         if not self._wait_future(send_future, timeout_sec=10.0):
             raise RuntimeError(f"工具 {tool_name} 发送 goal 超时")
         goal_ref = send_future.result()

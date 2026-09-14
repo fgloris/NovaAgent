@@ -1,10 +1,10 @@
-# LLM 供应商配置,全项目唯一权威来源。
+# LLM/VLM 供应商配置,全项目唯一权威来源。
 # providers 按列表顺序作为调用优先级:按序尝试,失败自动回退到下一个。
 # 支持 kind: openai(OpenAI 兼容接口) / anthropic。
 providers:
   - name: deepseek
     kind: openai
-    base_url: "https://api.deepseek.com/v1"
+    base_url: "https://api.deepseek.com"
     api_key_env: "DEEPSEEK_API_KEY"
     model: "deepseek-flash"
     vision: true

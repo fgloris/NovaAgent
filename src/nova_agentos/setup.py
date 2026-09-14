@@ -18,11 +18,11 @@ setup(
         (f"share/{package_name}/launch", glob("launch/*.launch.py")),
         *skill_files,
     ],
-    install_requires=["setuptools", "PyYAML"],
+    install_requires=["setuptools", "PyYAML", "numpy", "Pillow"],
     zip_safe=True,
     maintainer="ginger",
     maintainer_email="ginger@example.com",
-    description="NovaAgent core: skill injection, LLM planning to DAG, tool execution.",
+    description="NovaAgent core: sessions, short-term memory, VLM planning, and tool execution.",
     license="MIT",
     entry_points={
         "console_scripts": [

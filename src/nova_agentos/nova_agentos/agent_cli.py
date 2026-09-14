@@ -18,13 +18,14 @@ from std_srvs.srv import Trigger
 
 from nova_common.llm_client import LLMClient
 from nova_interfaces.msg import TaskState
-from nova_interfaces.srv import EnvInfo, RunTask
+from nova_interfaces.srv import EndSession, EnvInfo, ResumeSession, RunTask, StartSession
 
 # ANSI 颜色:kind -> (颜色, 标签)
 _KIND_STYLE = {
     "status": ("\033[90m", "system"),
     "text": ("\033[32m", "agent"),
     "tool_call": ("\033[33m", "tool"),
+    "tool_feedback": ("\033[35m", "feedback"),
     "tool_result": ("\033[36m", "result"),
 }
 _RESET = "\033[0m"
@@ -38,6 +39,8 @@ class AgentCliNode(Node):
         self.declare_parameter("env_reset_service", "/nova/env/reset")
         self.declare_parameter("env_info_service", "/nova/env/info")
         self.declare_parameter("console_url", "http://127.0.0.1:8090")
+        self._session_id = ""
+        self._session_name = ""
 
         cg = MutuallyExclusiveCallbackGroup()
         self._run_client = self.create_client(
@@ -49,6 +52,9 @@ class AgentCliNode(Node):
         self._info_client = self.create_client(
             EnvInfo, str(self.get_parameter("env_info_service").value), callback_group=cg
         )
+        self._start_client = self.create_client(StartSession, "/nova/agentos/session/start", callback_group=cg)
+        self._resume_client = self.create_client(ResumeSession, "/nova/agentos/session/resume", callback_group=cg)
+        self._end_client = self.create_client(EndSession, "/nova/agentos/session/end", callback_group=cg)
         self.create_subscription(
             TaskState,
             str(self.get_parameter("agent_msg_topic").value),
@@ -78,8 +84,45 @@ class AgentCliNode(Node):
         return future.result()
 
     def send_message(self, instruction: str) -> str:
-        resp = self._call(self._run_client, RunTask.Request(instruction=instruction))
+        if not self._session_id:
+            raise RuntimeError("请先执行 /session start [name] 或 /session resume <session_id>")
+        resp = self._call(
+            self._run_client,
+            RunTask.Request(session_id=self._session_id, instruction=instruction),
+        )
+        if not resp.success:
+            raise RuntimeError(resp.message)
         return resp.task_id
+
+    def session_start(self, name: str = "default") -> str:
+        resp = self._call(self._start_client, StartSession.Request(name=name))
+        if not resp.success:
+            return f"创建 session 失败: {resp.message}"
+        self._session_id, self._session_name = resp.session_id, name or "default"
+        return f"session={self._session_id} name={self._session_name}"
+
+    def session_resume(self, session_id: str) -> str:
+        resp = self._call(self._resume_client, ResumeSession.Request(session_id=session_id))
+        if not resp.success:
+            return f"恢复 session 失败: {resp.message}"
+        self._session_id, self._session_name = session_id, resp.name
+        return f"session={self._session_id} name={self._session_name}"
+
+    def session_end(self) -> str:
+        if not self._session_id:
+            return "当前没有 active session"
+        resp = self._call(self._end_client, EndSession.Request(session_id=self._session_id))
+        if not resp.success:
+            return f"结束 session 失败: {resp.message}"
+        old = self._session_id
+        self._session_id = ""
+        self._session_name = ""
+        return f"session={old} 已结束，文件={resp.archive_path}"
+
+    def session_info(self) -> str:
+        if not self._session_id:
+            return "当前没有 session"
+        return f"session={self._session_id} name={self._session_name}"
 
     def reset_env(self) -> str:
         resp = self._call(self._reset_client, Trigger.Request())
@@ -116,9 +159,13 @@ class AgentCliNode(Node):
             "  /env    查询仿真环境规格(相机/state/action 键)\n"
             "  /setup [profile]  经 nova_console 拉起整套栈(默认 robocasa_loop)\n"
             "  /sessions          查看 nova_console 会话状态\n"
+            "  /session start [name]    创建并激活 AgentOS session\n"
+            "  /session resume <id>     恢复 AgentOS session\n"
+            "  /session end             结束当前 AgentOS session\n"
+            "  /session info            查看当前 AgentOS session\n"
             "  /help   显示此帮助\n"
             "  /quit   退出\n"
-            "其余输入作为指令发给 agent(上下文跨任务累积)"
+            "其余输入作为指令发给 agent"
         )
 
     # ---------- nova_console 交互(HTTP,不依赖 ROS 服务) ----------
@@ -169,6 +216,19 @@ def main(args=None) -> int:
                         text = node.setup_console(rest[0] if rest else None)
                     elif cmd == "/sessions":
                         text = node.sessions_console()
+                    elif cmd == "/session":
+                        args = (rest[0] if rest else "").split(maxsplit=1)
+                        action = args[0] if args else "info"
+                        if action == "start":
+                            text = node.session_start(args[1] if len(args) > 1 else "default")
+                        elif action == "resume" and len(args) > 1:
+                            text = node.session_resume(args[1])
+                        elif action == "end":
+                            text = node.session_end()
+                        elif action == "info":
+                            text = node.session_info()
+                        else:
+                            text = "用法: /session start [name] | resume <id> | end | info"
                     else:
                         text = {
                             "/help": node.help_text(),

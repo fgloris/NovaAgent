@@ -84,7 +84,8 @@ ros2 run foxglove_bridge foxglove_bridge
 
 ### 五、各类命令
 ```
-ros2 service call /nova/agentos/run nova_interfaces/srv/RunTask "{instruction: '把桌面收拾干净'}"
+ros2 service call /nova/agentos/session/start nova_interfaces/srv/StartSession "{name: 'demo'}"
+ros2 service call /nova/agentos/run nova_interfaces/srv/RunTask "{session_id: 'sess_...', instruction: '把桌面收拾干净'}"
 ```
 reset仿真环境：
 ```
@@ -128,3 +129,19 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
 . install/setup.sh
 ```
 快速设计一个编排！
+
+# 9.14
+长期记忆 Long-Term Memory，需要持久化成文件。
+  ├── 用户记忆       用户偏好、习惯、约束
+  ├── 场景记忆       物体、位置、空间关系、环境状态
+  └── 经验和技能记忆（模型检索读取）  哪种任务应该如何执行，哪些方法在什么条件下成功/失败。目前的存法是放在skills里面，经验相关还没加。
+
+短期记忆 Context Memory，持久化成临时文件。
+  ├── 会话记忆       会话开始以来所有与用户对话、执行任务的记忆，当用户结束会话时生成一个会话ID并存成临时文件，以供用户恢复。
+  └── 任务记忆       当前用户发出的单个任务内的记忆
+
+短期记忆怎么维护？
+1. 每当一个新task入队，开启一个新任务记忆。该记忆过程中，所有的thinking和tool use反馈等应当保留。tool call内部记忆省略。
+2. 会话记忆表现为新任务记忆的列表。每次都需要给vlm发完整任务记忆。当上下文装不下，就需要从前面的任务记忆开始压缩总结，压缩为用户指令-执行方法-结果。
+3. 帮我加一个log（如果原来就有，把他做完），记录每次发给模型的context和模型的response。（即记录每次API调用完整内容。你可以在API Client那里加一层log）
+4. 长期记忆先不用写。

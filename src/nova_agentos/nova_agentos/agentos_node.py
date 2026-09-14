@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 # AgentOS 主节点:接收指令入队 -> 后台 agent 循环持续处理(上下文跨任务累积)。
 # agent 全部消息(规划文本/工具调用与结果/完成)经全局话题 /nova/agentos/agent_msg 发布。
-import uuid
 from pathlib import Path
 
 import rclpy
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
 
 from nova_common.llm_client import LLMClient
 from nova_interfaces.msg import TaskState
-from nova_interfaces.srv import RunTask
+from nova_interfaces.srv import EndSession, ResumeSession, RunTask, StartSession
 
+from nova_agentos.api_logger import ApiLogger
 from nova_agentos.agent_loop import AgentLoop
 from nova_agentos.mcp_adapter import McpAdapter
+from nova_agentos.memory import SessionManager
 from nova_agentos.skill_store import SkillStore
+from nova_agentos.vision_observer import VisionObserver
 
 
 class AgentosNode(Node):
@@ -24,6 +27,21 @@ class AgentosNode(Node):
         self.declare_parameter("execute_action", "/nova/executor_manager/execute")
         self.declare_parameter("run_task_service", "/nova/agentos/run")
         self.declare_parameter("agent_msg_topic", "/nova/agentos/agent_msg")
+        self.declare_parameter("env_ns", "/nova/env")
+        self.declare_parameter(
+            "vlm_camera_names", [], ParameterDescriptor(dynamic_typing=True)
+        )
+        self.declare_parameter("vlm_max_images", 6)
+        self.declare_parameter("vlm_max_image_size", 768)
+        self.declare_parameter("vlm_jpeg_quality", 80)
+        self.declare_parameter("context_budget_tokens", 12000)
+        self.declare_parameter("context_compaction_enabled", True)
+        self.declare_parameter("max_recent_tasks", 8)
+        self.declare_parameter("session_dir", "")
+        self.declare_parameter("api_log_enabled", True)
+        self.declare_parameter("api_log_images", True)
+        self.declare_parameter("api_log_dir", "")
+        self.declare_parameter("api_log_retention_days", 30)
 
         skills_dir = str(self.get_parameter("skills_dir").value)
         if not skills_dir:
@@ -31,7 +49,24 @@ class AgentosNode(Node):
             skills_dir = str(Path(get_package_share_directory("nova_agentos")) / "skills")
 
         self.skills = SkillStore(skills_dir)
-        self.llm = LLMClient()
+        api_dir = str(self.get_parameter("api_log_dir").value)
+        self.api_logger = ApiLogger(
+            enabled=bool(self.get_parameter("api_log_enabled").value),
+            images=bool(self.get_parameter("api_log_images").value),
+            directory=api_dir or None,
+            retention_days=int(self.get_parameter("api_log_retention_days").value),
+        )
+        self.llm = LLMClient(vision=True, api_logger=self.api_logger)
+        session_dir = str(self.get_parameter("session_dir").value)
+        self.sessions = SessionManager(session_dir or None)
+        self.vision = VisionObserver(
+            self,
+            env_ns=str(self.get_parameter("env_ns").value),
+            camera_names=list(self.get_parameter("vlm_camera_names").value),
+            max_images=int(self.get_parameter("vlm_max_images").value),
+            max_image_size=int(self.get_parameter("vlm_max_image_size").value),
+            jpeg_quality=int(self.get_parameter("vlm_jpeg_quality").value),
+        )
         self.adapter = McpAdapter(
             self,
             list_tools_srv=str(self.get_parameter("list_tools_service").value),
@@ -41,26 +76,87 @@ class AgentosNode(Node):
         self._msg_pub = self.create_publisher(
             TaskState, str(self.get_parameter("agent_msg_topic").value), 10
         )
-        self.loop = AgentLoop(self.llm, self.skills, self.adapter, on_state=self._on_state)
+        self.loop = AgentLoop(
+            self.llm,
+            self.skills,
+            self.adapter,
+            session_manager=self.sessions,
+            on_state=self._on_state,
+            observation_provider=self.vision.snapshot_message,
+            context_budget_tokens=int(self.get_parameter("context_budget_tokens").value),
+            context_compaction_enabled=bool(self.get_parameter("context_compaction_enabled").value),
+            max_recent_tasks=int(self.get_parameter("max_recent_tasks").value),
+        )
         self.loop.start()
 
         self.create_service(
             RunTask, str(self.get_parameter("run_task_service").value), self._run_task_cb
         )
+        self.create_service(StartSession, "/nova/agentos/session/start", self._start_session_cb)
+        self.create_service(ResumeSession, "/nova/agentos/session/resume", self._resume_session_cb)
+        self.create_service(EndSession, "/nova/agentos/session/end", self._end_session_cb)
         self.get_logger().info(f"AgentOS 就绪,skill 目录: {skills_dir}")
 
     # RunTask 非阻塞:入队即返回 task_id,agent 消息经 /nova/agentos/agent_msg 观察
     def _run_task_cb(self, request, response):
-        task_id = uuid.uuid4().hex[:8]
-        self.loop.submit(task_id, request.instruction)
+        try:
+            task = self.sessions.create_task(request.session_id, request.instruction)
+        except (FileNotFoundError, ValueError) as exc:
+            response.task_id = ""
+            response.success = False
+            response.message = str(exc)
+            return response
+        task_id = task.task_id
+        self.loop.submit(task_id, request.session_id, request.instruction)
         response.task_id = task_id
         response.success = True
-        response.message = f"已入队,消息见 /nova/agentos/agent_msg"
+        response.message = "已入队,消息见 /nova/agentos/agent_msg"
         self.get_logger().info(f"任务 {task_id} 已入队: {request.instruction}")
         return response
 
+    def _start_session_cb(self, request, response):
+        try:
+            record = self.sessions.start(request.name)
+            response.session_id = record.session_id
+            response.success = True
+            response.message = f"session 已创建并激活: {record.name}"
+        except Exception as exc:
+            response.success = False
+            response.message = str(exc)
+        return response
+
+    def _resume_session_cb(self, request, response):
+        try:
+            record = self.sessions.resume(request.session_id)
+            response.success = True
+            response.name = record.name
+            response.message = f"session 已恢复: {record.name}"
+        except (FileNotFoundError, ValueError) as exc:
+            response.success = False
+            response.message = str(exc)
+        return response
+
+    def _end_session_cb(self, request, response):
+        try:
+            record = self.sessions.end(request.session_id)
+            response.success = True
+            response.archive_path = str(self.sessions.root / record.session_id)
+            response.message = "session 已结束，文件已保留"
+        except (FileNotFoundError, ValueError) as exc:
+            response.success = False
+            response.message = str(exc)
+        return response
+
     # agent loop 线程回调 -> 发布到全局话题(消息按 task_id 区分)
-    def _on_state(self, task_id: str, status: str, message: str, done: bool, kind: str) -> None:
+    def _on_state(
+        self,
+        task_id: str,
+        session_id: str,
+        status: str,
+        message: str,
+        done: bool,
+        kind: str,
+    ) -> None:
         msg = TaskState()
         msg.task_id = task_id
         msg.status = status

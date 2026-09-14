@@ -3,6 +3,7 @@
 import json
 import os
 import time
+import base64
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,12 +30,13 @@ class LLMError(RuntimeError):
 class LLMClient:
     # vision=True/False 时只保留带(不带)vision: true 标记的 provider;
     # vision=None 保持原行为(全部 provider 按序尝试)。
-    def __init__(self, config: dict | None = None, vision: bool | None = None):
+    def __init__(self, config: dict | None = None, vision: bool | None = None, api_logger=None):
         self.config = config or llm_config.load()
         providers = self.config.get("providers", [])
         if vision is not None:
             providers = [p for p in providers if p.get("vision", False) == vision]
         self.providers = providers
+        self.api_logger = api_logger
 
     def chat(
         self,
@@ -42,19 +44,34 @@ class LLMClient:
         tools: list | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        task_id: str = "",
+        session_id: str = "",
     ) -> ChatResult:
         errors = []
-        for provider in self.providers:
+        for fallback_no, provider in enumerate(self.providers):
             try:
-                return self._chat_one(provider, messages, tools, temperature, max_tokens)
+                return self._chat_one(
+                    provider, messages, tools, temperature, max_tokens,
+                    task_id=task_id, session_id=session_id, fallback_no=fallback_no,
+                )
             except Exception as exc:
                 errors.append(f"{provider.get('name')}: {exc}")
         raise LLMError("所有 LLM provider 均失败: " + " | ".join(errors))
 
-    def _chat_one(self, provider, messages, tools, temperature, max_tokens) -> ChatResult:
+    def _chat_one(self, provider, messages, tools, temperature, max_tokens, task_id="", session_id="", fallback_no=0) -> ChatResult:
+        request_id = f"req_{os.urandom(8).hex()}"
+        metadata = {
+            "request_id": request_id,
+            "task_id": task_id,
+            "session_id": session_id,
+            "provider": provider.get("name", ""),
+            "model": provider.get("model", ""),
+            "requested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "fallback_no": fallback_no,
+        }
         if provider.get("kind") == "anthropic":
-            return self._chat_anthropic(provider, messages, tools, temperature, max_tokens)
-        return self._chat_openai(provider, messages, tools, temperature, max_tokens)
+            return self._chat_anthropic(provider, messages, tools, temperature, max_tokens, metadata)
+        return self._chat_openai(provider, messages, tools, temperature, max_tokens, metadata)
 
     # 逐个 provider 发一条最小 chat,测连接延迟;返回 [{name, ok, latency_ms} 或 {name, ok, error}]
     def ping(self, max_tokens: int = 8) -> list[dict]:
@@ -74,7 +91,7 @@ class LLMClient:
                 results.append({"name": provider.get("name"), "ok": False, "error": str(exc)[:200]})
         return results
 
-    def _chat_openai(self, provider, messages, tools, temperature, max_tokens) -> ChatResult:
+    def _chat_openai(self, provider, messages, tools, temperature, max_tokens, metadata=None) -> ChatResult:
         url = provider["base_url"].rstrip("/") + "/chat/completions"
         body = {
             "model": provider["model"],
@@ -84,15 +101,35 @@ class LLMClient:
         }
         if tools:
             body["tools"] = tools
-        resp = requests.post(
-            url,
-            headers={"Authorization": f"Bearer {self._api_key(provider)}"},
-            json=body,
-            timeout=provider.get("timeout_sec", DEFAULT_TIMEOUT),
-        )
-        if resp.status_code != 200:
-            raise LLMError(f"openai {resp.status_code}: {resp.text[:300]}")
-        data = resp.json()
+        request_id = (metadata or {}).get("request_id", "req_unknown")
+        started = time.perf_counter()
+        response_logged = False
+        if self.api_logger:
+            self.api_logger.request(request_id, metadata or {}, messages, tools, body)
+        try:
+            # Resolve credentials inside the logged request lifecycle so even
+            # configuration failures produce a paired response event.
+            api_key = self._api_key(provider)
+            resp = requests.post(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+                json=body,
+                timeout=provider.get("timeout_sec", DEFAULT_TIMEOUT),
+            )
+            elapsed = round((time.perf_counter() - started) * 1000)
+            if resp.status_code != 200:
+                if self.api_logger:
+                    self.api_logger.response(request_id, {**(metadata or {}), "duration_ms": elapsed}, error=resp.text[:1000], http_status=resp.status_code)
+                    response_logged = True
+                raise LLMError(f"openai {resp.status_code}: {resp.text[:300]}")
+            data = resp.json()
+            if self.api_logger:
+                self.api_logger.response(request_id, {**(metadata or {}), "duration_ms": elapsed}, response=data, http_status=resp.status_code)
+                response_logged = True
+        except Exception as exc:
+            if self.api_logger and not response_logged:
+                self.api_logger.response(request_id, {**(metadata or {}), "duration_ms": round((time.perf_counter() - started) * 1000)}, error=str(exc))
+            raise
         message = data["choices"][0]["message"]
         return ChatResult(
             message.get("content") or "",
@@ -101,7 +138,7 @@ class LLMClient:
             data,
         )
 
-    def _chat_anthropic(self, provider, messages, tools, temperature, max_tokens) -> ChatResult:
+    def _chat_anthropic(self, provider, messages, tools, temperature, max_tokens, metadata=None) -> ChatResult:
         url = provider["base_url"].rstrip("/") + "/v1/messages"
         system, an_messages = self._to_anthropic_messages(messages)
         body = {
@@ -121,15 +158,33 @@ class LLMClient:
                 }
                 for t in tools
             ]
-        resp = requests.post(
-            url,
-            headers={"x-api-key": self._api_key(provider), "anthropic-version": "2023-06-01"},
-            json=body,
-            timeout=provider.get("timeout_sec", DEFAULT_TIMEOUT),
-        )
-        if resp.status_code != 200:
-            raise LLMError(f"anthropic {resp.status_code}: {resp.text[:300]}")
-        data = resp.json()
+        request_id = (metadata or {}).get("request_id", "req_unknown")
+        started = time.perf_counter()
+        response_logged = False
+        if self.api_logger:
+            self.api_logger.request(request_id, metadata or {}, messages, tools, body)
+        try:
+            api_key = self._api_key(provider)
+            resp = requests.post(
+                url,
+                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                json=body,
+                timeout=provider.get("timeout_sec", DEFAULT_TIMEOUT),
+            )
+            elapsed = round((time.perf_counter() - started) * 1000)
+            if resp.status_code != 200:
+                if self.api_logger:
+                    self.api_logger.response(request_id, {**(metadata or {}), "duration_ms": elapsed}, error=resp.text[:1000], http_status=resp.status_code)
+                    response_logged = True
+                raise LLMError(f"anthropic {resp.status_code}: {resp.text[:300]}")
+            data = resp.json()
+            if self.api_logger:
+                self.api_logger.response(request_id, {**(metadata or {}), "duration_ms": elapsed}, response=data, http_status=resp.status_code)
+                response_logged = True
+        except Exception as exc:
+            if self.api_logger and not response_logged:
+                self.api_logger.response(request_id, {**(metadata or {}), "duration_ms": round((time.perf_counter() - started) * 1000)}, error=str(exc))
+            raise
         content = ""
         tool_calls = []
         for block in data.get("content", []):
@@ -177,8 +232,44 @@ class LLMClient:
                 else:
                     out.append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": m["tool_call_id"], "content": m.get("content", "")}]})
             else:
-                out.append({"role": "user", "content": m.get("content", "")})
+                out.append({"role": "user", "content": LLMClient._to_anthropic_content(m.get("content", ""))})
         return "\n\n".join(system_parts), out
+
+    @staticmethod
+    def _to_anthropic_content(content: Any) -> Any:
+        if not isinstance(content, list):
+            return content
+        out = []
+        for part in content:
+            if not isinstance(part, dict):
+                out.append({"type": "text", "text": str(part)})
+                continue
+            if part.get("type") == "text":
+                out.append({"type": "text", "text": str(part.get("text", ""))})
+            elif part.get("type") == "image_url":
+                url = (part.get("image_url") or {}).get("url", "")
+                media_type, data = LLMClient._parse_data_url(url)
+                out.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": data,
+                        },
+                    }
+                )
+        return out
+
+    @staticmethod
+    def _parse_data_url(url: str) -> tuple[str, str]:
+        prefix = "data:"
+        if not url.startswith(prefix) or ";base64," not in url:
+            raise LLMError("Anthropic vision 只支持 data:image/*;base64 图像 URL")
+        header, data = url[len(prefix):].split(";base64,", 1)
+        # 轻量校验,尽早发现截断或非 base64 数据。
+        base64.b64decode(data, validate=True)
+        return header or "image/jpeg", data
 
     @staticmethod
     def _value(value, provider, key, default):

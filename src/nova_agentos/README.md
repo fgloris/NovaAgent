@@ -1,13 +1,13 @@
 # nova_agentos
 
-NovaAgent 核心:LLM 驱动的持续 AgentOS。负责 skill 管理、agent 循环、工具调度执行。
+NovaAgent 核心:VLM 驱动的持续 AgentOS。负责 skill 管理、读取当前多路相机画面、agent 循环和工具调度执行。
 
 ## 数据流
 
 ```
-用户指令 → RunTask 服务(入队,立即返回 task_id)
+session start/resume → RunTask(session_id, 入队,立即返回 task_id)
         → 后台 agent 循环(上下文跨任务累积)
-            每轮:LLM 发一个函数调用(executor 工具 / load_skill / finish)
+            每轮:VLM 结合最新多路相机画面发一个函数调用(executor 工具 / load_skill / finish)
              ├─ executor 工具 → executor_manager → 具体 executor
              ├─ load_skill   → 本地注入 SKILL.md 全文
              ├─ finish       → 任务完成
@@ -17,14 +17,15 @@ NovaAgent 核心:LLM 驱动的持续 AgentOS。负责 skill 管理、agent 循�
 
 - **agent 循环**:无 DAG,每次调用一个工具,模型根据上一步结果决定下一步(闭环)。
 - **上下文持久**:对话历史跨任务累积,之前的任务结果可复用。
-- **全局消息**:`RunTask` 返回 `task_id`;agent 每轮规划、工具调用与结果、完成总结全部发布到 `/nova/agentos/agent_msg`(`TaskState`,字段:`task_id/status/done/kind/message`,`kind` ∈ status|text|tool_call|tool_result)。
+- **全局消息**:`RunTask` 必须携带 `session_id`;agent 每轮规划、工具调用、反馈与结果、完成总结全部发布到 `/nova/agentos/agent_msg`(`TaskState`,字段:`task_id/status/done/kind/message`,`kind` ∈ status|text|tool_call|tool_feedback|tool_result)。
 
 ## 模块
 
 | 文件 | 职责 |
 | --- | --- |
 | `skill_store.py` | 扫描 `skills/<name>/{SKILL.yaml, SKILL.md}`,生成索引、按需加载正文 |
-| `agent_loop.py` | 后台持续循环:消费消息队列、调用 LLM、执行工具、维护持久上下文 |
+| `agent_loop.py` | 后台持续循环:消费消息队列、调用 VLM、执行工具、维护持久上下文 |
+| `vision_observer.py` | 订阅 `/nova/env/obs` 与 `/nova/env/camera/*/image_raw`,为每轮规划生成多模态观测消息 |
 | `mcp_adapter.py` | 与 executor_manager 通信(查询工具 + 发 action goal) |
 | `agentos_node.py` | ROS 2 节点:RunTask 入队服务 + agent_msg 消息发布 |
 | `agent_cli.py` | 终端聊天 CLI:发消息 + 实时查看 agent 消息 + 调试命令 |
@@ -50,7 +51,8 @@ ros2 run nova_agentos nova_agentos_cli
 
 ```bash
 # 命令行直接调服务
-ros2 service call /nova/agentos/run nova_interfaces/srv/RunTask "{instruction: '把杯子放到桌上并等待2秒'}"
+ros2 service call /nova/agentos/session/start nova_interfaces/srv/StartSession "{name: 'demo'}"
+ros2 service call /nova/agentos/run nova_interfaces/srv/RunTask "{session_id: 'sess_...', instruction: '把杯子放到桌上并等待2秒'}"
 # 返回 task_id,立即返回
 
 # 监听全部 agent 消息
