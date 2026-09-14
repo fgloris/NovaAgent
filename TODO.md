@@ -110,7 +110,7 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
 ```
 
 ```bash
-. install/setup.sh && ros2 ros2 launch nova_robocasa_bridge robocasa_bridge.launch.py 
+. install/setup.sh && ros2 launch nova_robocasa_bridge robocasa_bridge.launch.py 
 ```
 
 ### foxglove

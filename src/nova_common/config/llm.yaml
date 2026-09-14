@@ -2,6 +2,16 @@
 # providers 按列表顺序作为调用优先级:按序尝试,失败自动回退到下一个。
 # 支持 kind: openai(OpenAI 兼容接口) / anthropic。
 providers:
+  - name: deepseek
+    kind: openai
+    base_url: "https://api.deepseek.com/v1"
+    api_key_env: "DEEPSEEK_API_KEY"
+    model: "deepseek-flash"
+    vision: true
+    max_tokens: 128000
+    temperature: 0.1
+    timeout_sec: 60.0
+
   - name: vectorengine
     kind: openai
     base_url: "https://api.vectorengine.cn/v1"
@@ -11,12 +21,3 @@ providers:
     max_tokens: 128000
     temperature: 0.1
     timeout_sec: 240.0
-
-  - name: deepseek
-    kind: openai
-    base_url: "https://api.deepseek.com/v1"
-    api_key_env: "DEEPSEEK_API_KEY"
-    model: "deepseek-v4-pro"
-    max_tokens: 128000
-    temperature: 0.1
-    timeout_sec: 60.0

@@ -358,9 +358,9 @@ class VlmLocator:
     def _annotate(self, img, blue_pixel, red_pixel):
         out = img.copy()
         if blue_pixel is not None:
-            out = draw_marker(out, blue_pixel, _BLUE, radius=10)
+            out = draw_marker(out, blue_pixel, _BLUE, radius=10.0)
         if red_pixel is not None:
-            out = draw_marker(out, red_pixel, _RED, radius=8)
+            out = draw_marker(out, red_pixel, _RED, radius=10.0)
         return out
 
     # 发一轮 VLM 请求:组装多图内容,记录历史(prompt+reply)并通过 on_round 发布本轮输入/输出。

@@ -80,6 +80,29 @@ def parse_pixel(text):
 
 # ---------- 图像标注 ----------
 
+# 网格编号渲染:字号随格子大小缩放;低于该下限(≈此前默认小字)就放弃渲染编号
+_LABEL_MIN_PX = 11
+_LABEL_FONT_SCALE = 0.5  # 字号约为格子短边的比例
+
+
+def _load_grid_font(px):
+    # 需要 TrueType 才能真正缩放字号;找不到可用字体时返回 None(退化为默认小字)
+    try:
+        from PIL import ImageFont
+    except Exception:
+        return None
+    for path in (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    ):
+        try:
+            return ImageFont.truetype(path, px)
+        except Exception:
+            continue
+    return None
+
+
 def draw_grid(img, grid_size, line_color=(200, 200, 200), label_color=(0, 200, 0)):
     out = img.copy()
     h, w = out.shape[:2]
@@ -89,13 +112,18 @@ def draw_grid(img, grid_size, line_color=(200, 200, 200), label_color=(0, 200, 0
         out[y, :] = line_color
         out[:, x] = line_color
     cell_h, cell_w = h / grid_size, w / grid_size
+    px = int(round(min(cell_h, cell_w) * _LABEL_FONT_SCALE))
+    if px < _LABEL_MIN_PX:
+        # 字号太小(低于当前可用最小字号),放弃渲染编号,只留网格线
+        return out
+    font = _load_grid_font(px)
     for r in range(grid_size):
         for c in range(grid_size):
             # 标签顺序与提示词/parse_grid_cell 一致:行-列(r+1 行, c+1 列)
             label = f"{r + 1}-{c + 1}"
             x = int((c + 0.5) * cell_w)
             y = int((r + 0.5) * cell_h)
-            _put_label(out, label, x, y, label_color)
+            _put_label(out, label, x, y, label_color, font=font)
     return out
 
 
@@ -120,12 +148,19 @@ def draw_marker(img, pixel, color, radius=8, label=None):
     return out
 
 
-def _put_label(img, text, x, y, color):
+def _put_label(img, text, x, y, color, font=None):
     h, w = img.shape[:2]
     try:
         from PIL import Image, ImageDraw
         pil = Image.fromarray(img)
-        ImageDraw.Draw(pil).text((x, y), text, fill=tuple(int(c) for c in color))
+        draw = ImageDraw.Draw(pil)
+        if font is not None:
+            l, t, r, b = draw.textbbox((0, 0), text, font=font)
+            x = int(x - (r - l) / 2)
+            y = int(y - (b - t) / 2)
+            draw.text((x, y), text, fill=tuple(int(c) for c in color), font=font)
+        else:
+            draw.text((x, y), text, fill=tuple(int(c) for c in color))
         img[:] = np.asarray(pil)
         return img
     except Exception:
