@@ -1,0 +1,16 @@
+string robot_id
+string frame_id
+EEFWaypoint[] waypoints
+float32 max_linear_speed
+float32 max_angular_speed
+float32 max_linear_acceleration
+float32 max_angular_acceleration
+---
+bool success
+string error
+string result_json
+---
+uint32 current_waypoint
+uint32 total_waypoints
+string status
+string message

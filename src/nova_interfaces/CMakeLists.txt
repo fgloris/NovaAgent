@@ -16,6 +16,7 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ToolDescriptor.msg"
   "msg/ExecutorHeartbeat.msg"
+  "msg/EEFWaypoint.msg"
   "msg/TaskState.msg"
   "srv/ListTools.srv"
   "srv/RunTask.srv"
@@ -24,6 +25,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/EndSession.srv"
   "srv/EnvInfo.srv"
   "action/MCPExecute.action"
+  "action/EEFExecute.action"
   DEPENDENCIES builtin_interfaces action_msgs
 )
 

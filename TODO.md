@@ -180,63 +180,44 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
 ```
 
 1. Session 是任务的外层容器
-
-  相关代码在：
-
   - src/nova_agentos/nova_agentos/agentos_node.py:92
   - src/nova_agentos/nova_agentos/memory.py:107
 
   AgentOS 提供三个 session 服务：
-
   /nova/agentos/session/start
   /nova/agentos/session/resume
   /nova/agentos/session/end
 
-  start 会生成类似：
-
-  sess_a1b2c3d4e5f6
-
+  start 会生成类似： sess_a1b2c3d4e5f6
   并创建：
-
   ~/.cache/nova_agentos/sessions/<session_id>/
   ├── session.json
   ├── context.json
   └── tasks/
 
   RunTask 必须携带 session：
-
   string session_id
   string instruction
 
   在 src/nova_agentos/nova_agentos/agentos_node.py:101：
-
   task = self.sessions.create_task(
       request.session_id,
       request.instruction,
   )
 
   这里会做两件事：
-
   1. 检查 session 是否存在并且是 active
   2. 创建一个新的 TaskMemory
 
   如果 session 不存在、已经结束或者 session_id 为空，任务不会入队。
 
-  ———
-
-  2. 所有任务进入同一个全局 FIFO 队列
-
-  相关代码在：
-
+2. 所有任务进入同一个全局 FIFO 队列
   - src/nova_agentos/nova_agentos/agent_loop.py:224
   - src/nova_agentos/nova_agentos/agent_loop.py:263
 
-  AgentLoop 内部只有一个队列：
-
-  self.queue: queue.Queue = queue.Queue()
+  AgentLoop 内部只有一个队列：  self.queue: queue.Queue = queue.Queue()
 
   提交任务时：
-
   self.loop.submit(
       task_id,
       request.session_id,
@@ -244,42 +225,25 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
   )
 
   然后后台线程按照 FIFO 顺序执行：
-
   while self._running:
       item = self.queue.get()
       ...
       TaskRunner(...).run()
 
   因此当前行为是：
-
   session A 的 task 1
   session B 的 task 1
   session A 的 task 2
 
   仍然会全局串行执行，不会并发控制机器人。
-
   这样可以避免两个任务同时调用机器人动作，产生动作竞争。
 
   注意：session 是隔离的，但执行队列不是隔离的。
 
-  ———
-
-  3. TaskRunner 是单任务状态机
-
-  相关代码在：
-
+3. TaskRunner 是单任务状态机
   src/nova_agentos/nova_agentos/agent_loop.py:50
-
-  一个任务的执行主循环是：
-
-  for round_no in range(1, MAX_STEPS_PER_TASK + 1):
-
-  默认最多执行 20 轮：
-
-  MAX_STEPS_PER_TASK = 20
-
-  每一轮大致如下：
-
+  一个任务的执行主循环是： for round_no in range(1, MAX_STEPS_PER_TASK + 1):
+  默认最多执行 20 轮。每一轮大致如下：
   1. 读取 session 历史任务
   2. 获取当前 task 事件
   3. 获取最新观测
@@ -291,86 +255,25 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
   9. 下一轮重新调用 VLM
 
   模型不是一次性生成完整计划，而是每次只决定下一步。
-
-  例如用户输入：
-
-  把杯子放到桌子上
-
-  模型可能产生：
-
-  第 1 轮: 调用 grasp_object
-  第 2 轮: 调用 move_to
-  第 3 轮: 调用 release_object
-  第 4 轮: 调用 finish
-
   每一步工具执行完后，结果都会反馈给模型，由模型决定下一步。
 
-  ———
-
-  4. VLM 可调用三类内部工具
-
-  定义在：
-
+4. VLM 可调用三类内部工具
   src/nova_agentos/nova_agentos/agent_loop.py:17
-
-  当前固定加入两个 AgentOS 内置工具：
+  当前固定加入两个 AgentOS 内置工具以及各个 Executor 工具：
 
   tools = [
       LOAD_SKILL_TOOL,
       FINISH_TOOL,
   ] + to_llm_tools(descriptors)
 
-  分别是：
-
-  ### load_skill
-
-  模型可以请求加载技能文件：
-
-  {
-    "skill": "tidy_table"
-  }
-
-  执行后读取：
-
-  skills/tidy_table/SKILL.md
-
-  内容会作为工具结果回填到当前任务上下文。
-
-  ### finish
-
-  模型完成任务时调用：
-
-  {
-    "summary": "已经把杯子放到桌子上"
-  }
-
-  Agent 收到 finish 后：
-
-  self.task.finish("success", summary)
-
-  然后写入任务文件并发布完成消息。
-
   ### Executor 工具
-
   这些工具来自 executor manager：
-
   descriptors = self.adapter.fetch_tools()
 
-  例如：
-
-  grasp
-  move
-  release
-  pi0_policy
-
+  例如：grasp、move、release、pi0_policy
   它们通过 ToolDescriptor 动态发现，再转换成 OpenAI function schema。
 
-  ———
-
-  5. 工具执行链路
-
-  相关代码：
-
+5. 工具执行链路
   - src/nova_agentos/nova_agentos/mcp_adapter.py:33
   - src/nova_executor_manager/nova_executor_manager/executor_manager_node.py:90
 
@@ -406,23 +309,18 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
 
   Executor Manager 根据心跳注册表找到真正的 executor，然后转发 Action goal。
 
-  ———
-
-  6. Action feedback 会实时进入 Agent
+6. Action feedback 会实时进入 Agent
 
   McpAdapter.execute() 接收回调：
-
   feedback_callback=None
 
   调用 Action 时注册：
-
   send_goal_async(
       goal,
       feedback_callback=...
   )
 
   收到反馈后，会进入 TaskRunner：
-
   def feedback(status, message):
       self.task.add_event(
           "tool_feedback",
@@ -432,12 +330,10 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
       )
 
   例如 executor 发送：
-
   status = running
   message = 正在移动到桌面
 
   会产生一个任务事件：
-
   {
     "type": "tool_feedback",
     "tool_name": "move",
@@ -446,34 +342,26 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
   }
 
   同时发布 ROS 消息：
-
   TaskState.kind = tool_feedback
 
   所以 UI 或 CLI 可以实时看到：
-
   [task_xxx][feedback] move: 正在移动到桌面
 
-  ———
-
-  7. 工具结果和失败处理
+7. 工具结果和失败处理
 
   工具执行完成后，结果会统一转换成字符串：
-
   content = self._run_tool(name, args)
 
   成功示例：
-
   {
     "success": true,
     "summary": "抓取完成"
   }
 
   失败示例：
-
   工具执行失败: grasp action server 不可用
 
   无论成功还是失败，都会先写入任务事件：
-
   self.task.add_event(
       "tool_result",
       tool_name=name,
@@ -482,27 +370,20 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
   )
 
   然后发布：
-
   TaskState.kind = tool_result
 
-  连续失败达到三次时，任务终止：
-
-  MAX_TOOL_FAILS = 3
+  连续失败达到三次时，任务终止。
 
   执行顺序是：
-
   tool_feedback
   tool_result
   failed task
 
   也就是说，工具失败不会直接跳过 tool_result。
 
-  ———
-
-  8. 当前任务记忆和 session 历史记忆
+8. 当前任务记忆和 session 历史记忆
 
   任务记忆结构大致是：
-
   {
     "task_id": "task_xxx",
     "session_id": "sess_xxx",
@@ -556,12 +437,7 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
       for item in self.manager.tasks(self.task.session_id)
   ]
 
-  ———
-
-  9. 每轮 VLM 收到什么上下文
-
-  上下文构造在：
-
+9. 每轮 VLM 收到什么上下文
   src/nova_agentos/nova_agentos/memory.py:271
 
   当前消息结构大致是：
@@ -606,16 +482,9 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
 
   当前相机图片不是历史记忆的一部分，而是每轮重新从 VisionObserver 获取。
 
-  ———
-
-  10. 历史任务会被压缩
-
-  压缩逻辑在：
-
+10. 历史任务会被压缩
   src/nova_agentos/nova_agentos/memory.py:228
-
   参数是：
-
   context_budget_tokens: 12000
   context_compaction_enabled: true
   max_recent_tasks: 8
@@ -639,12 +508,7 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
 
   原始 task JSON 不会删除，压缩只影响 context.json 中用于发送给 VLM 的上下文。
 
-  ———
-
-  11. 视觉观测如何进入模型
-
-  代码在：
-
+11. 视觉观测如何进入模型
   src/nova_agentos/nova_agentos/vision_observer.py:63
 
   VisionObserver 订阅：
@@ -652,9 +516,7 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
   /nova/env/obs
   /nova/env/camera/<camera_name>/image_raw
 
-  每轮调用：
-
-  self.observation_provider()
+  每轮调用 self.observation_provider()
 
   得到类似：
 
@@ -679,7 +541,6 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
   }
 
   相机帧会：
-
   1. 转成 RGB
   2. 缩放到 vlm_max_image_size
   3. 压缩为 JPEG
@@ -687,24 +548,14 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
 
   历史任务文件只保存任务事件，不把原始图片塞进 session 上下文。
 
-  ———
-
-  12. 每次 VLM 请求都会记 API 日志
-
-  日志接入点在：
-
+12. 每次 VLM 请求都会记 API 日志
   src/nova_common/nova_common/llm_client.py:94
 
-  每个 provider 实际请求都会生成新的：
+  每个 provider 实际请求都会生成新的： request_id = req_xxx
 
-  request_id = req_xxx
-
-  日志目录：
-
-  ~/.local/share/nova_agentos/api_logs/YYYY-MM-DD/
+  日志目录在 ~/.local/share/nova_agentos/api_logs/YYYY-MM-DD/
 
   每个请求至少包含两行：
-
   {
     "type": "request",
     "request_id": "...",
@@ -717,7 +568,6 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
   }
 
   以及：
-
   {
     "type": "response",
     "request_id": "...",
@@ -728,12 +578,9 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
 
   如果第一个 provider 失败并 fallback 到第二个 provider，每个实际 HTTP 请求都会单独记录。
 
-  图片不会把 base64 重复写入 JSONL，而是保存到：
-
-  ~/.local/share/nova_agentos/api_logs/images/<request_id>/
+  图片不会把 base64 重复写入 JSONL，而是保存到 ~/.local/share/nova_agentos/api_logs/images/<request_id>/
 
   并记录：
-
   camera
   timestamp
   width
@@ -741,16 +588,10 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
   sha256
   path
 
-  ———
-
-  13. ROS 状态消息如何发布
-
-  消息定义在：
-
-  src/nova_interfaces/msg/TaskState.msg
+13. ROS 状态消息如何发布
+  消息定义在 src/nova_interfaces/msg/TaskState.msg
 
   当前支持：
-
   status
   text
   tool_call
@@ -768,9 +609,7 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
       kind,
   )
 
-  节点收到后发布到：
-
-  /nova/agentos/agent_msg
+  节点收到后发布到 /nova/agentos/agent_msg
 
   例如一次任务可能发布：
 
@@ -785,9 +624,7 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
 
   done=true 只在最终成功或失败时出现。
 
-  ———
-
-  14. CLI 的编排方式
+14. CLI 的编排方式
 
   CLI 不会自动创建 session。
 
@@ -820,8 +657,6 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
     -> RunTask(session_id, instruction)
     -> AgentOS 入队
     -> TaskState 订阅回显
-
-  ———
 
   当前实现的两个边界
 
