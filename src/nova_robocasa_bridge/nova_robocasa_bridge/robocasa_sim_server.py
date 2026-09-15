@@ -404,23 +404,26 @@ class RoboCasaSession:
     def _eef_pose_base(self, obs: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
         """返回 EEF 在机器人基座坐标系下的 (位置, XYZW 四元数)。
 
-        优先取 obs 里现成的相对量;缺失时回退到 sim 的 site 世界位姿,
-        再用基座位姿做逆变换(旋转转置)换算到基座系。
+        优先用 sim 的 EEF site(位置与姿态同源,且与 IK/OSC 一致);
+        无 site 时回退 obs 相对量(姿态是 body 系,与 site 不一致,仅测试/兜底用)。
         """
-        position = self._obs_value(obs, "end_effector_position_relative", "robot0_base_to_eef_pos")
-        orientation = self._obs_value(obs, "end_effector_rotation_relative", "robot0_base_to_eef_quat")
-        if position is not None and orientation is not None:
-            return np.asarray(position, dtype=float).reshape(-1)[:3], _orientation_to_quat_xyzw(orientation)
         robot = self.env.unwrapped.robots[0]
         sim = self.env.unwrapped.sim
         site_ids = getattr(robot, "eef_site_id", {})
         site_id = site_ids.get("right") if isinstance(site_ids, dict) else site_ids
-        if site_id is None:
-            raise RuntimeError("eef_site_unavailable")
-        world_position = np.asarray(sim.data.site_xpos[int(site_id)], dtype=float)
-        world_rotation = np.asarray(sim.data.site_xmat[int(site_id)], dtype=float).reshape(3, 3)
-        base_position, base_rotation = self._base_pose_world()
-        return base_rotation.T @ (world_position - base_position), _matrix_to_quat_xyzw(base_rotation.T @ world_rotation)
+        if site_id is not None:
+            world_position = np.asarray(sim.data.site_xpos[int(site_id)], dtype=float)
+            world_rotation = np.asarray(sim.data.site_xmat[int(site_id)], dtype=float).reshape(3, 3)
+            base_position, base_rotation = self._base_pose_world()
+            return (
+                base_rotation.T @ (world_position - base_position),
+                _matrix_to_quat_xyzw(base_rotation.T @ world_rotation),
+            )
+        position = self._obs_value(obs, "end_effector_position_relative", "robot0_base_to_eef_pos")
+        orientation = self._obs_value(obs, "end_effector_rotation_relative", "robot0_base_to_eef_quat")
+        if position is not None and orientation is not None:
+            return np.asarray(position, dtype=float).reshape(-1)[:3], _orientation_to_quat_xyzw(orientation)
+        raise RuntimeError("eef_site_unavailable")
 
     @staticmethod
     def _flatten_indexes(value: Any) -> list[int]:
@@ -495,11 +498,23 @@ class RoboCasaSession:
         return qpos, qvel
 
     def _base_pose_world(self) -> tuple[np.ndarray, np.ndarray]:
-        """返回机器人在世界系下的 (base_position, base_rotation 3x3)。"""
+        """返回机器人在世界系下的 (base_position, base_rotation 3x3)。
+
+        基座系取 robosuite 的 base center site(观测/控制器/IK 都用它);
+        robot.base_pos/base_ori 是 root body(常为 [10,10,0] 占位),仅作回退。
+        """
         robot = self.env.unwrapped.robots[0]
-        base_position = np.asarray(getattr(robot, "base_pos", [0.0, 0.0, 0.0]), dtype=float).reshape(-1)[:3]
-        base_rotation = base_rotation_matrix(getattr(robot, "base_ori", None))
-        return base_position, base_rotation
+        sim = self.env.unwrapped.sim
+        try:
+            site_name = robot.robot_model.base.correct_naming("center")
+            site_id = sim.model.site_name2id(site_name)
+            position = np.asarray(sim.data.site_xpos[int(site_id)], dtype=float)
+            rotation = np.asarray(sim.data.get_site_xmat(site_name), dtype=float).reshape(3, 3)
+            return position, rotation
+        except Exception:
+            position = np.asarray(getattr(robot, "base_pos", [0.0, 0.0, 0.0]), dtype=float).reshape(-1)[:3]
+            rotation = base_rotation_matrix(getattr(robot, "base_ori", None))
+            return position, rotation
 
     def _target_world(self, waypoint: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
         """把路径点从基座坐标系变换到世界坐标系,返回 (世界位置, 世界旋转矩阵)。"""

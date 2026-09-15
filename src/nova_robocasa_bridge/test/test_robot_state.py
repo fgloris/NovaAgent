@@ -39,6 +39,42 @@ def test_wxyz_is_converted_to_ros_xyzw():
     assert wxyz_to_xyzw([1.0, 0.1, 0.2, 0.3]) == [0.1, 0.2, 0.3, 1.0]
 
 
+class _SiteModel:
+    def site_name2id(self, name):
+        return 0 if name == "mobilebase0_center" else 3
+
+
+class _SiteData:
+    def __init__(self):
+        self.site_xpos = np.array(
+            [[2.0, -0.7, 0.7], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [2.1, -0.7, 0.8]]
+        )
+        self.site_xmat = np.zeros((4, 9))
+        self.site_xmat[0] = np.eye(3).reshape(-1)
+        self.site_xmat[3] = np.eye(3).reshape(-1)
+
+    def get_site_xmat(self, name):
+        return self.site_xmat[0]
+
+
+class _BaseModel:
+    def correct_naming(self, name):
+        return f"mobilebase0_{name}"
+
+
+def test_eef_pose_is_relative_to_base_center_site():
+    data = _SiteData()
+    sim = SimpleNamespace(model=_SiteModel(), data=data)
+    robot = SimpleNamespace(
+        eef_site_id={"right": 3}, robot_model=SimpleNamespace(base=_BaseModel())
+    )
+    session = RoboCasaSession()
+    session.env = SimpleNamespace(unwrapped=SimpleNamespace(robots=[robot], sim=sim))
+    position, quaternion = session._eef_pose_base({})
+    assert position == pytest.approx([0.1, 0.0, 0.1])
+    assert quaternion == pytest.approx([0.0, 0.0, 0.0, 1.0])
+
+
 def test_base_rotation_matrix_accepts_matrix_and_quaternion():
     matrix = _quat_to_matrix_xyzw(wxyz_to_xyzw([0.9238795, 0.0, 0.0, 0.3826834]))
     assert base_rotation_matrix(matrix) == pytest.approx(matrix)
