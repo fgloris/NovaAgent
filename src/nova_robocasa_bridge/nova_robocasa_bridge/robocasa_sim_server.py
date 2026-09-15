@@ -162,6 +162,24 @@ def base_frame_projection(
     return (p @ t).tolist()
 
 
+def base_rotation_matrix(base_ori: Any) -> np.ndarray:
+    """把 robosuite 的 robot.base_ori 统一成 3x3 旋转矩阵。
+
+    robosuite 1.5 起 base_ori 是 3x3 矩阵;兼容旧版 WXYZ 四元数与 9 维展平矩阵。
+    """
+    if base_ori is None:
+        return np.eye(3)
+    value = np.asarray(base_ori, dtype=float)
+    if value.shape == (3, 3):
+        return value
+    flat = value.reshape(-1)
+    if flat.size == 4:
+        return _quat_to_matrix_xyzw(wxyz_to_xyzw(flat))
+    if flat.size == 9:
+        return flat.reshape(3, 3)
+    raise ValueError("invalid base_ori")
+
+
 def action_vector_to_dict(values: np.ndarray) -> dict[str, list[float]]:
     """把规范动作向量 [pos3,rot3,gripper,base4,control_mode] 转成 RoboCasa 动作 dict。
 
@@ -401,9 +419,7 @@ class RoboCasaSession:
             raise RuntimeError("eef_site_unavailable")
         world_position = np.asarray(sim.data.site_xpos[int(site_id)], dtype=float)
         world_rotation = np.asarray(sim.data.site_xmat[int(site_id)], dtype=float).reshape(3, 3)
-        base_position = np.asarray(getattr(robot, "base_pos", [0.0, 0.0, 0.0]), dtype=float)
-        base_orientation = wxyz_to_xyzw(getattr(robot, "base_ori", [1.0, 0.0, 0.0, 0.0]))
-        base_rotation = _quat_to_matrix_xyzw(base_orientation)
+        base_position, base_rotation = self._base_pose_world()
         return base_rotation.T @ (world_position - base_position), _matrix_to_quat_xyzw(base_rotation.T @ world_rotation)
 
     @staticmethod
@@ -479,10 +495,10 @@ class RoboCasaSession:
         return qpos, qvel
 
     def _base_pose_world(self) -> tuple[np.ndarray, np.ndarray]:
-        """返回机器人在世界系下的 (base_position, base_rotation)。"""
+        """返回机器人在世界系下的 (base_position, base_rotation 3x3)。"""
         robot = self.env.unwrapped.robots[0]
-        base_position = np.asarray(getattr(robot, "base_pos", [0.0, 0.0, 0.0]), dtype=float)
-        base_rotation = _quat_to_matrix_xyzw(wxyz_to_xyzw(getattr(robot, "base_ori", [1.0, 0.0, 0.0, 0.0])))
+        base_position = np.asarray(getattr(robot, "base_pos", [0.0, 0.0, 0.0]), dtype=float).reshape(-1)[:3]
+        base_rotation = base_rotation_matrix(getattr(robot, "base_ori", None))
         return base_position, base_rotation
 
     def _target_world(self, waypoint: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:

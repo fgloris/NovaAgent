@@ -7,6 +7,7 @@ from nova_robocasa_bridge.robocasa_sim_server import (
     RoboCasaSession,
     _quat_to_matrix_xyzw,
     base_frame_projection,
+    base_rotation_matrix,
     wxyz_to_xyzw,
 )
 
@@ -36,6 +37,13 @@ def _session():
 
 def test_wxyz_is_converted_to_ros_xyzw():
     assert wxyz_to_xyzw([1.0, 0.1, 0.2, 0.3]) == [0.1, 0.2, 0.3, 1.0]
+
+
+def test_base_rotation_matrix_accepts_matrix_and_quaternion():
+    matrix = _quat_to_matrix_xyzw(wxyz_to_xyzw([0.9238795, 0.0, 0.0, 0.3826834]))
+    assert base_rotation_matrix(matrix) == pytest.approx(matrix)
+    assert base_rotation_matrix([1.0, 0.0, 0.0, 0.0]) == pytest.approx(np.eye(3))
+    assert base_rotation_matrix(None) == pytest.approx(np.eye(3))
 
 
 def _project(projection, point):
