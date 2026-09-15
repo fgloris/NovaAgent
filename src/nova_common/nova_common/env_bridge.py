@@ -94,6 +94,10 @@ class EnvBridgeBase(Node):
     def _extra_info(self) -> dict[str, Any]:
         return dict(self.sim_info)
 
+    def _observation_info(self) -> dict[str, Any]:
+        """Return lightweight, per-frame metadata for ``/nova/env/obs``."""
+        return dict(self.sim_info)
+
     # ---------- 公共逻辑 ----------
     def _zero_action(self):
         return self.action_vector_to_native(np.zeros(self.action_spec["dim"], dtype=np.float32))
@@ -201,7 +205,7 @@ class EnvBridgeBase(Node):
             return
 
         stamp = self.get_clock().now().to_msg()
-        payload = dict(self._extra_info())
+        payload = dict(self._observation_info())
         payload.update(
             {
                 "step_count": self.step_count,

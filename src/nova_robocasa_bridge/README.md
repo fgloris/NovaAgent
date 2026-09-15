@@ -28,7 +28,8 @@ conda robocasa 进程, Python 3.11
   - 负责 env.reset() 和 env.step()
 ```
 
-TCP 协议为按行分隔的 JSON。观测中的 numpy 数组以 base64 编码，并附带 dtype 和 shape 元数据。
+TCP 使用长度前缀的 JSON header + 二进制 ndarray body，支持 `reset`、`step`、
+`robot_state`、`validate_eef_trajectory` 和 `step_eef` 请求。
 
 ## Topics
 
@@ -40,6 +41,7 @@ TCP 协议为按行分隔的 JSON。观测中的 numpy 数组以 base64 编码�
   - 动作转换在 sim server 端完成(规范向量 → RoboCasa action dict)。
 - `/nova/env/obs`（`std_msgs/String`）
   - 自描述 JSON：含 `sim/robots/controller`、`instruction`、`action_spec`、精简后的 `state` 与 `cameras`。大型数组以 shape/dtype/min/max 概括。
+  - 不包含完整机器人描述；机器人 schema、Markdown 和 hash 只由 `/nova/env/info` 返回。
 - `/nova/env/reward`（`std_msgs/Float32`）
 - `/nova/env/success`（`std_msgs/Bool`）
 - `/nova/env/camera/<name>/image_raw`（`sensor_msgs/Image`）
@@ -51,6 +53,12 @@ TCP 协议为按行分隔的 JSON。观测中的 numpy 数组以 base64 编码�
   - 自发现：返回 `action_spec`（维度+含义）与 `obs_spec`（相机/state 键），供 AgentOS 规划转发。
 - `/nova/env/reset`（`std_srvs/Trigger`）
 - `/nova/env/step_zero`（`std_srvs/Trigger`）
+
+## EEF action 与机器人状态
+
+- `/nova/robocasa/eef_execute`（`nova_interfaces/action/EEFExecute`）在执行任何点前完成整条轨迹 IK 预检。
+- `/robot0/eef_pose`、`/robot0/joint_states`、`/robot0/gripper_state` 直接发布 sim server 构造的规范状态。
+- EEF action 执行期间暂停 timer 零动作步进，并忽略 VLA `/nova/env/action_cmd`，取消在最近的控制周期边界生效。
 
 ## 运行
 
@@ -72,6 +80,14 @@ ros2 launch nova_robocasa_bridge robocasa_bridge.launch.py
 ```
 
 然后在另一个终端启动 ROS 桥接器。
+
+完整 AgentOS 拓扑（bridge、raw/VLA/perception executor、manager 和 AgentOS）可用：
+
+```bash
+ros2 launch nova_agentos system.launch.py
+```
+
+该 launch 不启动 Python 3.11 sim server，也不启动远程 Pi server；两者需预先作为外部进程运行。
 
 在另一个终端中，可以手动或使用随机动作驱动机器人：
 

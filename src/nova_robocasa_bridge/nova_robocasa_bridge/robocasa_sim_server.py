@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,97 @@ _ROBOCASA_ACTION_MEANING = [
     "base_vx", "base_vy", "base_wz", "base_rz",
     "control_mode",
 ]
+
+
+def wxyz_to_xyzw(quaternion: Any) -> list[float]:
+    """Convert a MuJoCo/robosuite WXYZ quaternion to ROS XYZW."""
+    q = np.asarray(quaternion, dtype=float).reshape(-1)
+    if q.size != 4:
+        raise ValueError("quaternion must contain four values")
+    return [float(q[1]), float(q[2]), float(q[3]), float(q[0])]
+
+
+def _normalize_quat_xyzw(quaternion: Any) -> np.ndarray:
+    q = np.asarray(quaternion, dtype=float).reshape(-1)
+    if q.size == 3:
+        angle = float(np.linalg.norm(q))
+        if angle < 1e-12:
+            return np.array([0.0, 0.0, 0.0, 1.0])
+        q = np.r_[q / angle * np.sin(angle / 2.0), np.cos(angle / 2.0)]
+    if q.size != 4 or not np.all(np.isfinite(q)):
+        raise ValueError("invalid quaternion")
+    norm = float(np.linalg.norm(q))
+    if norm < 1e-12:
+        raise ValueError("invalid quaternion")
+    return q / norm
+
+
+def _orientation_to_quat_xyzw(orientation: Any) -> np.ndarray:
+    value = np.asarray(orientation, dtype=float).reshape(-1)
+    if value.size in (3, 4):
+        return _normalize_quat_xyzw(value)
+    if value.size == 6:
+        first = value[:3] / np.linalg.norm(value[:3])
+        second = value[3:] - np.dot(first, value[3:]) * first
+        second /= np.linalg.norm(second)
+        return _matrix_to_quat_xyzw(np.column_stack((first, second, np.cross(first, second))))
+    if value.size == 9:
+        return _matrix_to_quat_xyzw(value.reshape(3, 3))
+    raise ValueError("invalid orientation")
+
+
+def _matrix_to_quat_xyzw(matrix: Any) -> np.ndarray:
+    """Convert a 3x3 rotation matrix to a normalized XYZW quaternion."""
+    m = np.asarray(matrix, dtype=float).reshape(3, 3)
+    trace = float(np.trace(m))
+    if trace > 0.0:
+        s = np.sqrt(trace + 1.0) * 2.0
+        q = np.array([(m[2, 1] - m[1, 2]) / s, (m[0, 2] - m[2, 0]) / s,
+                      (m[1, 0] - m[0, 1]) / s, 0.25 * s])
+    else:
+        i = int(np.argmax(np.diag(m)))
+        if i == 0:
+            s = np.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2]) * 2.0
+            q = np.array([0.25 * s, (m[0, 1] + m[1, 0]) / s,
+                          (m[0, 2] + m[2, 0]) / s, (m[2, 1] - m[1, 2]) / s])
+        elif i == 1:
+            s = np.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2]) * 2.0
+            q = np.array([(m[0, 1] + m[1, 0]) / s, 0.25 * s,
+                          (m[1, 2] + m[2, 1]) / s, (m[0, 2] - m[2, 0]) / s])
+        else:
+            s = np.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1]) * 2.0
+            q = np.array([(m[0, 2] + m[2, 0]) / s, (m[1, 2] + m[2, 1]) / s,
+                          0.25 * s, (m[1, 0] - m[0, 1]) / s])
+    return _normalize_quat_xyzw(q)
+
+
+def _quat_multiply_xyzw(a: Any, b: Any) -> np.ndarray:
+    ax, ay, az, aw = _normalize_quat_xyzw(a)
+    bx, by, bz, bw = _normalize_quat_xyzw(b)
+    return np.array([
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ])
+
+
+def _quat_to_matrix_xyzw(q: Any) -> np.ndarray:
+    x, y, z, w = _normalize_quat_xyzw(q)
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ])
+
+
+def _rotation_error(target: np.ndarray, current: np.ndarray) -> np.ndarray:
+    error = target @ current.T
+    return 0.5 * np.array([
+        error[2, 1] - error[1, 2],
+        error[0, 2] - error[2, 0],
+        error[1, 0] - error[0, 1],
+    ])
 
 
 def action_vector_to_dict(values: np.ndarray) -> dict[str, list[float]]:
@@ -127,13 +219,16 @@ class RoboCasaSession:
         self.env = None
         self.env_config: dict[str, Any] | None = None
         self.latest_obs: dict[str, Any] | None = None
+        self._lock = threading.RLock()
 
     def reset(self, request: dict[str, Any]) -> dict[str, Any]:
-        self._ensure_env(request)
-        assert self.env is not None
-        obs, info = self.env.reset(seed=int(request.get("seed", 0)))
-        obs = self._prepare_obs(obs, info)
-        self.latest_obs = obs
+        with self._lock:
+            self._ensure_env(request)
+            assert self.env is not None
+            obs, info = self.env.reset(seed=int(request.get("seed", 0)))
+            obs = self._prepare_obs(obs, info)
+            self.latest_obs = obs
+            robot_state = self._build_robot_state(obs)
         print(
             f"[robocasa] env reset: task description = {obs.get('state.instruction', '')!r}",
             flush=True,
@@ -145,16 +240,18 @@ class RoboCasaSession:
             "action_spec": self._action_spec(),
             "obs_spec": build_obs_spec(obs),
             "sim_info": self._sim_info(),
+            "robot_state": robot_state,
         }
 
     def step(self, request: dict[str, Any]) -> dict[str, Any]:
-        if self.env is None:
-            raise RuntimeError("environment is not initialized; call reset first")
-        action = action_vector_to_dict(np.asarray(request["action"], dtype=np.float32))
-        obs, reward, terminated, truncated, info = self.env.step(action)
-        obs = self._prepare_obs(obs, info)
-        self.latest_obs = obs
-        return {
+        with self._lock:
+            if self.env is None:
+                raise RuntimeError("environment is not initialized; call reset first")
+            action = action_vector_to_dict(np.asarray(request["action"], dtype=np.float32))
+            obs, reward, terminated, truncated, info = self.env.step(action)
+            obs = self._prepare_obs(obs, info)
+            self.latest_obs = obs
+            response = {
             "ok": True,
             "obs": obs,
             "reward": float(reward),
@@ -164,7 +261,267 @@ class RoboCasaSession:
             "action_spec": self._action_spec(),
             "obs_spec": build_obs_spec(obs),
             "sim_info": self._sim_info(),
+            "robot_state": self._build_robot_state(obs),
+            }
+        return response
+
+    def robot_state(self, request: dict[str, Any] | None = None) -> dict[str, Any]:
+        del request
+        with self._lock:
+            if self.env is None:
+                raise RuntimeError("environment is not initialized; call reset first")
+            return {"ok": True, "robot_state": self._build_robot_state(self.latest_obs or {})}
+
+    def validate_eef_trajectory(self, request: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            waypoints = self._validate_waypoint_payload(request.get("waypoints"))
+            solutions = self._solve_trajectory_ik(waypoints, request)
+            return {"ok": True, "valid": True, "solutions": solutions}
+
+    def step_eef(self, request: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            if self.env is None:
+                raise RuntimeError("environment is not initialized; call reset first")
+            waypoint = self._validate_waypoint_payload([request.get("waypoint")])[0]
+            current = self._eef_pose_base(self.latest_obs or {})
+            position_delta = waypoint["position"] - current[0]
+            q_current = current[1]
+            q_target = waypoint["orientation"]
+            q_error = _quat_multiply_xyzw(q_target, [-q_current[0], -q_current[1], -q_current[2], q_current[3]])
+            if q_error[3] < 0:
+                q_error = -q_error
+            vector_norm = float(np.linalg.norm(q_error[:3]))
+            rotation_delta = np.zeros(3)
+            if vector_norm > 1e-9:
+                rotation_delta = q_error[:3] / vector_norm * (2.0 * np.arctan2(vector_norm, q_error[3]))
+            output_max = self._osc_output_max()
+            command = np.zeros(len(_ROBOCASA_ACTION_MEANING), dtype=np.float32)
+            command[:3] = np.clip(position_delta / output_max[:3], -1.0, 1.0)
+            command[3:6] = np.clip(rotation_delta / output_max[3:6], -1.0, 1.0)
+            if waypoint["gripper"] is not None:
+                command[6] = float(np.clip(waypoint["gripper"], -1.0, 1.0))
+            action = action_vector_to_dict(command)
+            obs, reward, terminated, truncated, info = self.env.step(action)
+            obs = self._prepare_obs(obs, info)
+            self.latest_obs = obs
+            return {
+                "ok": True,
+                "obs": obs,
+                "reward": float(reward),
+                "terminated": bool(terminated),
+                "truncated": bool(truncated),
+                "info": info,
+                "action_spec": self._action_spec(),
+                "obs_spec": build_obs_spec(obs),
+                "sim_info": self._sim_info(),
+                "robot_state": self._build_robot_state(obs),
+            }
+
+    def _validate_waypoint_payload(self, raw: Any) -> list[dict[str, Any]]:
+        if not isinstance(raw, list) or not raw:
+            raise ValueError("empty_waypoints")
+        workspace = self.scene_config.get("workspace", {"min": [-0.8, -0.8, 0.0], "max": [0.8, 0.8, 1.2]})
+        result = []
+        for item in raw:
+            if not isinstance(item, dict):
+                raise ValueError("invalid_pose")
+            position = np.asarray(item.get("position"), dtype=float).reshape(-1)
+            if position.size != 3 or not np.all(np.isfinite(position)):
+                raise ValueError("invalid_pose")
+            if any(position[i] < workspace["min"][i] or position[i] > workspace["max"][i] for i in range(3)):
+                raise ValueError("workspace_violation")
+            orientation = _orientation_to_quat_xyzw(item.get("orientation"))
+            gripper = item.get("gripper")
+            if gripper is not None and not np.isfinite(float(gripper)):
+                raise ValueError("invalid_gripper")
+            result.append({"position": position, "orientation": orientation,
+                           "gripper": None if gripper is None else float(gripper)})
+        return result
+
+    def _obs_value(self, obs: dict[str, Any], *names: str) -> Any:
+        for name in names:
+            for key in (f"state.{name}", name):
+                if key in obs:
+                    return obs[key]
+        return None
+
+    def _eef_pose_base(self, obs: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+        position = self._obs_value(obs, "end_effector_position_relative", "robot0_base_to_eef_pos")
+        orientation = self._obs_value(obs, "end_effector_rotation_relative", "robot0_base_to_eef_quat")
+        if position is not None and orientation is not None:
+            return np.asarray(position, dtype=float).reshape(-1)[:3], _orientation_to_quat_xyzw(orientation)
+        robot = self.env.unwrapped.robots[0]
+        sim = self.env.unwrapped.sim
+        site_ids = getattr(robot, "eef_site_id", {})
+        site_id = site_ids.get("right") if isinstance(site_ids, dict) else site_ids
+        if site_id is None:
+            raise RuntimeError("eef_site_unavailable")
+        world_position = np.asarray(sim.data.site_xpos[int(site_id)], dtype=float)
+        world_rotation = np.asarray(sim.data.site_xmat[int(site_id)], dtype=float).reshape(3, 3)
+        base_position = np.asarray(getattr(robot, "base_pos", [0.0, 0.0, 0.0]), dtype=float)
+        base_orientation = wxyz_to_xyzw(getattr(robot, "base_ori", [1.0, 0.0, 0.0, 0.0]))
+        base_rotation = _quat_to_matrix_xyzw(base_orientation)
+        return base_rotation.T @ (world_position - base_position), _matrix_to_quat_xyzw(base_rotation.T @ world_rotation)
+
+    @staticmethod
+    def _flatten_indexes(value: Any) -> list[int]:
+        if value is None:
+            return []
+        return [int(v) for v in np.asarray(value).reshape(-1)]
+
+    def _joint_data(self) -> tuple[list[str], list[int], list[int]]:
+        robot = self.env.unwrapped.robots[0]
+        names: list[str] = []
+        for attribute in ("base_joints", "torso_joints", "robot_joints", "joint_names"):
+            for name in list(getattr(robot, attribute, None) or []):
+                if str(name) not in names:
+                    names.append(str(name))
+        qpos_ids = self._flatten_indexes(getattr(robot, "_ref_joint_pos_indexes", None))
+        qvel_ids = self._flatten_indexes(getattr(robot, "_ref_joint_vel_indexes", None))
+        model = self.env.unwrapped.sim.model
+        resolved = []
+        for name in names:
+            try:
+                qpos_addr = model.get_joint_qpos_addr(name)
+                qvel_addr = model.get_joint_qvel_addr(name)
+                if isinstance(qpos_addr, tuple) or isinstance(qvel_addr, tuple):
+                    continue
+                resolved.append((name, int(qpos_addr), int(qvel_addr)))
+            except Exception:
+                continue
+        if resolved:
+            return ([item[0] for item in resolved], [item[1] for item in resolved],
+                    [item[2] for item in resolved])
+        count = min(len(names), len(qpos_ids))
+        return [str(v) for v in names[:count]], qpos_ids[:count], qvel_ids[:count]
+
+    def _build_robot_state(self, obs: dict[str, Any]) -> dict[str, Any]:
+        position, orientation = self._eef_pose_base(obs)
+        names, qpos_ids, qvel_ids = self._joint_data()
+        data = self.env.unwrapped.sim.data
+        gripper = self._obs_value(obs, "gripper_qpos", "robot0_gripper_qpos")
+        if gripper is None:
+            robot = self.env.unwrapped.robots[0]
+            gripper_obj = getattr(robot, "gripper", None)
+            if isinstance(gripper_obj, dict):
+                gripper_obj = gripper_obj.get("right") or next(iter(gripper_obj.values()), None)
+            gripper_ids = self._flatten_indexes(getattr(gripper_obj, "_ref_joint_pos_indexes", None))
+            gripper = [float(data.qpos[i]) for i in gripper_ids]
+        velocities = [float(data.qvel[i]) for i in qvel_ids] if len(qvel_ids) == len(names) else []
+        return {
+            "robot_id": "robot0",
+            "base_frame": "robot0_base",
+            "eef": {"position": position.tolist(), "orientation": orientation.tolist()},
+            "joints": {
+                "name": names,
+                "position": [float(data.qpos[i]) for i in qpos_ids],
+                "velocity": velocities,
+            },
+            "gripper": {"position": np.asarray(gripper, dtype=float).reshape(-1).tolist()},
         }
+
+    def _arm_indexes(self) -> tuple[list[int], list[int]]:
+        robot = self.env.unwrapped.robots[0]
+        qpos = self._flatten_indexes(getattr(robot, "_ref_arm_joint_pos_indexes", None))
+        qvel = self._flatten_indexes(getattr(robot, "_ref_arm_joint_vel_indexes", None))
+        if not qpos or not qvel:
+            qpos = self._flatten_indexes(getattr(robot, "_ref_joint_pos_indexes", None))[-7:]
+            qvel = self._flatten_indexes(getattr(robot, "_ref_joint_vel_indexes", None))[-7:]
+        if not qpos or len(qpos) != len(qvel):
+            raise RuntimeError("arm_joint_indexes_unavailable")
+        return qpos, qvel
+
+    def _target_world(self, waypoint: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+        robot = self.env.unwrapped.robots[0]
+        base_position = np.asarray(getattr(robot, "base_pos", [0.0, 0.0, 0.0]), dtype=float)
+        base_rotation = _quat_to_matrix_xyzw(wxyz_to_xyzw(getattr(robot, "base_ori", [1.0, 0.0, 0.0, 0.0])))
+        return (base_position + base_rotation @ waypoint["position"],
+                base_rotation @ _quat_to_matrix_xyzw(waypoint["orientation"]))
+
+    def _solve_trajectory_ik(self, waypoints: list[dict[str, Any]], constraints: dict[str, Any]) -> list[list[float]]:
+        if self.env is None:
+            raise RuntimeError("environment is not initialized; call reset first")
+        import mujoco
+
+        sim = self.env.unwrapped.sim
+        model = getattr(sim.model, "_model", sim.model)
+        data = getattr(sim.data, "_data", sim.data)
+        robot = self.env.unwrapped.robots[0]
+        site_ids = getattr(robot, "eef_site_id", {})
+        site_id = site_ids.get("right") if isinstance(site_ids, dict) else site_ids
+        if site_id is None:
+            raise RuntimeError("eef_site_unavailable")
+        qpos_ids, dof_ids = self._arm_indexes()
+        saved_qpos = np.array(data.qpos, copy=True)
+        saved_qvel = np.array(data.qvel, copy=True)
+        saved_act = np.array(data.act, copy=True) if getattr(data, "act", None) is not None else None
+        saved_state = sim.get_state() if hasattr(sim, "get_state") else None
+        seed = np.array(data.qpos[qpos_ids], copy=True)
+        jump_limit = float(constraints.get("joint_jump_threshold", self.scene_config.get("joint_jump_threshold", 0.5)))
+        damping = float(constraints.get("ik_damping", 1e-3))
+        solutions: list[list[float]] = []
+        try:
+            for waypoint in waypoints:
+                data.qpos[qpos_ids] = seed
+                mujoco.mj_forward(model, data)
+                target_position, target_rotation = self._target_world(waypoint)
+                solved = False
+                for _ in range(100):
+                    current_position = np.asarray(data.site_xpos[int(site_id)])
+                    current_rotation = np.asarray(data.site_xmat[int(site_id)]).reshape(3, 3)
+                    error = np.r_[target_position - current_position,
+                                  _rotation_error(target_rotation, current_rotation)]
+                    if np.linalg.norm(error[:3]) < 1e-4 and np.linalg.norm(error[3:]) < 2e-3:
+                        solved = True
+                        break
+                    jac_pos = np.zeros((3, model.nv))
+                    jac_rot = np.zeros((3, model.nv))
+                    mujoco.mj_jacSite(model, data, jac_pos, jac_rot, int(site_id))
+                    jacobian = np.vstack((jac_pos[:, dof_ids], jac_rot[:, dof_ids]))
+                    delta = jacobian.T @ np.linalg.solve(jacobian @ jacobian.T + damping * np.eye(6), error)
+                    data.qpos[qpos_ids] += np.clip(delta, -0.1, 0.1)
+                    self._enforce_joint_limits(model, data, qpos_ids)
+                    mujoco.mj_forward(model, data)
+                if not solved:
+                    raise ValueError(f"ik_failed:{len(solutions)}")
+                solution = np.array(data.qpos[qpos_ids], copy=True)
+                if np.max(np.abs(solution - seed)) > jump_limit:
+                    raise ValueError(f"joint_jump_violation:{len(solutions)}")
+                solutions.append(solution.tolist())
+                seed = solution
+        finally:
+            if saved_state is not None and hasattr(sim, "set_state"):
+                sim.set_state(saved_state)
+                sim.forward()
+            else:
+                data.qpos[:] = saved_qpos
+                data.qvel[:] = saved_qvel
+                if saved_act is not None:
+                    data.act[:] = saved_act
+                mujoco.mj_forward(model, data)
+        return solutions
+
+    @staticmethod
+    def _enforce_joint_limits(model: Any, data: Any, qpos_ids: list[int]) -> None:
+        for joint_id in range(int(model.njnt)):
+            address = int(model.jnt_qposadr[joint_id])
+            if address not in qpos_ids or not bool(model.jnt_limited[joint_id]):
+                continue
+            low, high = model.jnt_range[joint_id]
+            data.qpos[address] = np.clip(data.qpos[address], low, high)
+
+    def _osc_output_max(self) -> np.ndarray:
+        robot = self.env.unwrapped.robots[0]
+        controller = getattr(robot, "composite_controller", None)
+        parts = getattr(controller, "part_controllers", {})
+        arm = parts.get("right") if isinstance(parts, dict) else None
+        values = getattr(arm, "output_max", None)
+        if values is None:
+            values = [0.05, 0.05, 0.05, 0.5, 0.5, 0.5]
+        values = np.asarray(values, dtype=float).reshape(-1)
+        if values.size < 6 or np.any(values[:6] <= 0):
+            raise RuntimeError("invalid_osc_output_max")
+        return values[:6]
 
     def close(self) -> None:
         if self.env is not None:

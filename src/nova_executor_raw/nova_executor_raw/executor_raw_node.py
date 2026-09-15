@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-import json, time
+import json
 import rclpy
-from rclpy.action import ActionServer
+from rclpy.action import ActionServer, CancelResponse
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from nova_interfaces.action import MCPExecute
 from nova_interfaces.msg import ExecutorHeartbeat, ToolDescriptor
 from .trajectory import Pose, validate_waypoints, compose, interpolate, normalize
+from .ros_backend import RosEEFBackend
 
 TOOLS = {
     "move_eef": (
@@ -60,45 +63,18 @@ TOOLS = {
 }
 
 
-class DefaultBackend:
-    def describe(self):
-        """返回后备 backend 的能力和安全限制。"""
-        return {
-            "robot_id": "robot0",
-            "robot_base": "robot0_base",
-            "supports_gripper": False,
-            "max_linear_speed": 0.2,
-            "max_angular_speed": 1.0,
-            "workspace": {"min": [-0.8, -0.8, 0.0], "max": [0.8, 0.8, 1.2]},
-        }
-
-    def get_current_pose(self, robot_id):
-        """返回指定机器人的当前 EEF 位姿。"""
-        return Pose([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
-
-    def transform_pose(self, pose, source, target):
-        """在坐标系之间转换位姿；后备实现保持位姿不变。"""
-        return pose
-
-    def validate_trajectory(self, traj, constraints):
-        """执行 backend 专属的轨迹执行前检查。"""
-        return None
-
-    def execute_trajectory(self, traj, feedback_callback, cancel_callback):
-        """执行轨迹，同时发布反馈并响应取消请求。"""
-        for i, _ in enumerate(traj):
-            if cancel_callback():
-                return {"success": False, "error": "cancelled"}
-            feedback_callback(i, len(traj), "running", "executing")
-            time.sleep(0.001)
-        return {"success": True, "executed_points": len(traj)}
-
-
 class ExecutorRawNode(Node):
     def __init__(self):
         """创建 MCP action server 并启动能力心跳。"""
         super().__init__("nova_executor_raw")
-        self.backend = DefaultBackend()
+        self.declare_parameter("eef_action_name", "/nova/robocasa/eef_execute")
+        self.declare_parameter("robot_id", "robot0")
+        self.backend = RosEEFBackend(
+            self,
+            action_name=str(self.get_parameter("eef_action_name").value),
+            robot_id=str(self.get_parameter("robot_id").value),
+        )
+        callback_group = ReentrantCallbackGroup()
         self._servers = []
         for name in TOOLS:
             self._servers.append(
@@ -107,6 +83,8 @@ class ExecutorRawNode(Node):
                     MCPExecute,
                     f"/{self.get_name()}/{name}/execute",
                     self._callback(name),
+                    cancel_callback=lambda _goal: CancelResponse.ACCEPT,
+                    callback_group=callback_group,
                 )
             )
         self.pub = self.create_publisher(
@@ -143,7 +121,8 @@ class ExecutorRawNode(Node):
                     ) and not b.get("supports_gripper", False):
                         raise ValueError("gripper_unsupported")
                     poses = validate_waypoints(p.get("waypoints"))
-                    start = None
+                    start = self.backend.get_current_pose(rid)
+                    poses = [start] + poses
                 else:
                     start = self.backend.get_current_pose(rid)
                     raw = []
@@ -154,10 +133,15 @@ class ExecutorRawNode(Node):
                             raise ValueError("invalid_pose")
                         raw.append(
                             compose(
-                                start, Pose([float(x) for x in pos], normalize(rot))
+                                start,
+                                Pose(
+                                    [float(x) for x in pos],
+                                    normalize(rot),
+                                    None if w.get("gripper") is None else float(w["gripper"]),
+                                ),
                             )
                         )
-                    poses = raw
+                    poses = [start] + raw
                 poses = [
                     self.backend.transform_pose(x, frame, b.get("robot_base", frame))
                     for x in poses
@@ -186,7 +170,10 @@ class ExecutorRawNode(Node):
                     goal_handle.publish_feedback(f)
 
                 out = self.backend.execute_trajectory(
-                    traj, feedback, lambda: goal_handle.is_cancel_requested
+                    traj,
+                    feedback,
+                    lambda: goal_handle.is_cancel_requested,
+                    p,
                 )
                 r = MCPExecute.Result()
                 r.success = out.get("success", False)
@@ -210,6 +197,11 @@ def main(args=None):
     """初始化 ROS、运行 executor 节点并安全关闭。"""
     rclpy.init(args=args)
     n = ExecutorRawNode()
-    rclpy.spin(n)
-    n.destroy_node()
-    rclpy.shutdown()
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(n)
+    try:
+        executor.spin()
+    finally:
+        executor.shutdown()
+        n.destroy_node()
+        rclpy.shutdown()

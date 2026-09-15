@@ -276,12 +276,13 @@ class Compactor:
         historical = [
             {"task_id": t.task_id, "summary": self.summary(t)} for t in tasks[:split]
         ]
+        used_summaries = bool(historical)
         payload = {"historical_summaries": historical, "recent_tasks": detailed}
         current_cost = self._estimate(
             {"instruction": current.instruction, "events": current.events}
         )
         if not self.enabled or self._estimate(payload) + current_cost <= self.budget_tokens:
-            return payload, False
+            return payload, used_summaries
         while historical and self._estimate(payload) + current_cost > self.budget_tokens:
             historical.pop(0)
             payload = {"historical_summaries": historical, "recent_tasks": detailed}

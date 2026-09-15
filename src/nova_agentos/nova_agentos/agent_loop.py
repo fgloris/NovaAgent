@@ -251,6 +251,7 @@ class AgentLoop:
         self.session_manager = session_manager or SessionManager()
         self.on_state = on_state
         self.observation_provider = observation_provider
+        self.robot_context_provider = robot_context_provider
         self.context_builder = ContextBuilder(
             Compactor(context_budget_tokens, context_compaction_enabled, max_recent_tasks)
         )

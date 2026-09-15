@@ -37,7 +37,8 @@ Skill 是**任务型领域经验**(纯文本),描述"怎么完成某个任务",�
 ## 运行
 
 ```bash
-# 一键启动 demo executor + manager + agentos
+# 启动 bridge + raw/VLA/perception executor + manager + agentos。
+# RoboCasa Python 3.11 sim server 和 Pi server 是外部前置进程。
 ros2 launch nova_agentos system.launch.py
 
 # 单独启动 agentos

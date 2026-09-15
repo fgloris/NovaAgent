@@ -138,6 +138,12 @@ class JsonLineRequestHandler(socketserver.StreamRequestHandler):
             return self.server.session.reset(request)
         if request_type == "step":
             return self.server.session.step(request)
+        if request_type == "robot_state":
+            return self.server.session.robot_state(request)
+        if request_type == "validate_eef_trajectory":
+            return self.server.session.validate_eef_trajectory(request)
+        if request_type == "step_eef":
+            return self.server.session.step_eef(request)
         if request_type == "close":
             self.server.session.close()
             return {"ok": True}

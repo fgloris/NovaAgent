@@ -1,4 +1,4 @@
-# 一键启动 NovaAgent 演示系统:VLA executor + executor_manager + agentos
+# 完整 ROS 侧拓扑。RoboCasa sim server 与 Pi server 仍是外部进程。
 from pathlib import Path
 
 from launch import LaunchDescription
@@ -12,8 +12,24 @@ def generate_launch_description():
     perception_config = (
         Path(get_package_share_directory("nova_preception_executor")) / "config" / "perception.yaml"
     )
+    robocasa_config = (
+        Path(get_package_share_directory("nova_robocasa_bridge")) / "config" / "bridge.yaml"
+    )
     return LaunchDescription(
         [
+            Node(
+                package="nova_robocasa_bridge",
+                executable="robocasa_bridge_node",
+                name="robocasa_bridge",
+                output="screen",
+                parameters=[str(robocasa_config)],
+            ),
+            Node(
+                package="nova_executor_raw",
+                executable="nova_executor_raw_node",
+                name="nova_executor_raw",
+                output="screen",
+            ),
             Node(
                 package="nova_vla_executor",
                 executable="nova_vla_executor_node",

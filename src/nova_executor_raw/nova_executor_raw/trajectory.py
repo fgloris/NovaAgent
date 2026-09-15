@@ -9,6 +9,7 @@ class Pose:
     """表示笛卡尔位置和四元数姿态。"""
     position: list
     orientation: list
+    gripper: float | None = None
 
 
 def _finite(v):
@@ -49,6 +50,7 @@ def compose(base, delta):
     return Pose(
         [base.position[i] + r[i] for i in range(3)],
         normalize(quat_mul(base.orientation, delta.orientation)),
+        delta.gripper,
     )
 
 
@@ -88,6 +90,7 @@ def interpolate(poses, linear_speed=0.1, angular_speed=0.5, hz=20):
                         for k in range(3)
                     ],
                     slerp(a.orientation, b.orientation, t),
+                    b.gripper if b.gripper is not None else a.gripper,
                 )
             )
     out.append(poses[-1])
@@ -105,5 +108,14 @@ def validate_waypoints(data, max_count=100):
         p = w.get("position") if isinstance(w, dict) else None
         if not isinstance(p, list) or len(p) != 3 or not _finite(p):
             raise ValueError("invalid_pose")
-        out.append(Pose([float(x) for x in p], normalize(w.get("orientation"))))
+        gripper = w.get("gripper")
+        if gripper is not None and not math.isfinite(float(gripper)):
+            raise ValueError("invalid_gripper")
+        out.append(
+            Pose(
+                [float(x) for x in p],
+                normalize(w.get("orientation")),
+                None if gripper is None else float(gripper),
+            )
+        )
     return out

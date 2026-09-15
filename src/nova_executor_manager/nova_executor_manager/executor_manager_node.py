@@ -4,8 +4,9 @@
 import time
 
 import rclpy
-from rclpy.action import ActionClient, ActionServer
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.action import ActionClient, ActionServer, CancelResponse
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
 from nova_interfaces.action import MCPExecute
@@ -28,14 +29,19 @@ class ExecutorManagerNode(Node):
         # 转发用 ActionClient 缓存;注意不能叫 _clients,rclpy Node 内部占用该名字
         self._action_clients: dict[str, ActionClient] = {}
         # 独立 callback group:execute 回调内同步等待转发结果,避免与默认组互斥卡死
-        self._fwd_cg = MutuallyExclusiveCallbackGroup()
+        self._fwd_cg = ReentrantCallbackGroup()
 
         self.create_subscription(ExecutorHeartbeat, HEARTBEAT_TOPIC, self._on_heartbeat, 10)
         self.create_service(
             ListTools, str(self.get_parameter("list_tools_service").value), self._list_tools_cb
         )
         self._action_server = ActionServer(
-            self, MCPExecute, str(self.get_parameter("execute_action").value), self._execute_cb
+            self,
+            MCPExecute,
+            str(self.get_parameter("execute_action").value),
+            self._execute_cb,
+            cancel_callback=lambda _goal: CancelResponse.ACCEPT,
+            callback_group=self._fwd_cg,
         )
         self.create_timer(1.0, self._expire_check)
 
@@ -96,7 +102,9 @@ class ExecutorManagerNode(Node):
         send_future = client.send_goal_async(
             fwd_goal, feedback_callback=self._make_feedback_forward(goal_handle)
         )
-        rclpy.spin_until_future_complete(self, send_future, timeout_sec=10.0)
+        deadline = time.monotonic() + 10.0
+        while not send_future.done() and time.monotonic() < deadline:
+            time.sleep(0.01)
         if not send_future.done():
             result.success = False
             result.error = "发送 goal 超时"
@@ -113,12 +121,14 @@ class ExecutorManagerNode(Node):
         while rclpy.ok() and not result_future.done():
             if goal_handle.is_cancel_requested:
                 cancel_future = client.cancel_goal_async(goal_ref)
-                rclpy.spin_until_future_complete(self, cancel_future, timeout_sec=5.0)
+                deadline = time.monotonic() + 5.0
+                while not cancel_future.done() and time.monotonic() < deadline:
+                    time.sleep(0.01)
                 result.success = False
                 result.error = "任务被取消"
                 goal_handle.canceled()
                 return result
-            rclpy.spin_until_future_complete(self, result_future, timeout_sec=0.1)
+            time.sleep(0.01)
 
         if not result_future.done():
             result.success = False
@@ -150,10 +160,14 @@ def main(args=None) -> int:
     rclpy.init(args=args)
     node = ExecutorManagerNode()
     try:
-        rclpy.spin(node)
+        executor = MultiThreadedExecutor(num_threads=4)
+        executor.add_node(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        if "executor" in locals():
+            executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
     return 0
