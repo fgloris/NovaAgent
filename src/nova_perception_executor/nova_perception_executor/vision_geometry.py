@@ -253,6 +253,15 @@ def project_point_safe(K, Rt, point):
     return float(p[0] / p[2]), float(p[1] / p[2]), float(cam[2])
 
 
+def projected_length(K, Rt, p0, p1):
+    """两点投影后的像素距离;任一点在相机后方时返回 0。"""
+    a = project_point_safe(K, Rt, p0)
+    b = project_point_safe(K, Rt, p1)
+    if a is None or b is None:
+        return 0.0
+    return float(np.hypot(a[0] - b[0], a[1] - b[1]))
+
+
 def _perp_basis(axis):
     """给定单位轴,返回两个与之正交的单位向量 u, v。"""
     a = np.asarray(axis, dtype=float)
@@ -326,7 +335,7 @@ def build_arrow(origin, orientation, length, radius, head_length=None, head_radi
     origin = np.asarray(origin, dtype=float).reshape(3)
     length = float(length)
     radius = float(radius)
-    head_length = float(head_length) if head_length else max(radius * 2.5, length * 0.3)
+    head_length = float(head_length) if head_length else max(radius * 6.0, radius + 1e-4)
     head_length = min(head_length, length * 0.9)
     head_radius = float(head_radius) if head_radius else max(radius * 2.0, radius + 1e-4)
     u, v = _perp_basis(axis)
@@ -433,9 +442,10 @@ def _axis_to_quat(axis):
 
 
 def rasterize_mesh(img, vertices, faces, colors, intrinsics, projection,
-                   alpha=0.45, supersample=2):
-    """画家算法光栅化:背面剔除 + 面心深度从远到近 + 光照 + 超采样 alpha 合成。"""
-    from PIL import Image, ImageDraw
+                   alpha=0.45, supersample=2, outline=True, outline_width=2,
+                   outline_color=(0, 0, 0)):
+    """画家算法光栅化:深度排序 + 光照 + 超采样 alpha 合成;可选按 alpha 膨胀描边。"""
+    from PIL import Image, ImageDraw, ImageFilter
 
     K = np.asarray(intrinsics, dtype=float).reshape(3, 3)
     Rt = decompose_projection(K, projection)
@@ -475,6 +485,13 @@ def rasterize_mesh(img, vertices, faces, colors, intrinsics, projection,
         r, g, b = (np.clip(np.asarray(colors[fi], dtype=float) * shade, 0, 255)).tolist()
         pts = [(float(u[i]) * ss, float(v[i]) * ss) for i in (i0, i1, i2)]
         draw.polygon(pts, fill=(int(r), int(g), int(b), int(round(255 * alpha))))
+    if outline and float(outline_width) > 0:
+        # 用 alpha 膨胀得到整体轮廓,在其下方铺一层描边色(不会露出内部三角边)
+        stroke = max(1, int(round(float(outline_width) * ss)))
+        border_alpha = overlay.getchannel("A").filter(ImageFilter.MaxFilter(stroke * 2 + 1))
+        border = Image.new("RGBA", overlay.size, tuple(int(c) for c in outline_color) + (0,))
+        border.putalpha(border_alpha)
+        overlay = Image.alpha_composite(border, overlay)
     if ss != 1:
         overlay = overlay.resize((w, h), Image.LANCZOS)
     base = Image.fromarray(img).convert("RGBA")

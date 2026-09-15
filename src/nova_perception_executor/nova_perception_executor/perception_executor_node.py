@@ -54,10 +54,17 @@ LOCATE_SCHEMA = {
 _IMAGE_DESC = "源图:相机名(用该相机最新帧)或之前绘制工具返回的 image_id(可在其基础上继续叠加)"
 _RADIUS_DESC = "箭头/杆半径(m,base 系投影前固定值,近大远小),默认取节点参数"
 _COLOR_DESC = "颜色:名称(red/green/blue/yellow/cyan/magenta/orange/white)或 [r,g,b](0-255)"
+_STYLE_PROPS = {
+    "alpha": {"type": "number", "description": "箭头不透明度 0~1,默认取节点参数"},
+    "outline": {"type": "boolean", "description": "是否给箭头描边,默认取节点参数"},
+    "outline_width": {"type": "number", "description": "描边宽度(像素),默认取节点参数"},
+    "outline_color": {"description": "描边颜色:名称或 [r,g,b],默认黑"},
+}
 
 VISUALIZE_FRAME_SCHEMA = {
     "type": "object",
     "properties": {
+        **_STYLE_PROPS,
         "image": {"type": "string", "description": _IMAGE_DESC},
         "origin": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3,
                    "description": "坐标系原点(base 系 x,y,z,m)"},
@@ -74,6 +81,7 @@ VISUALIZE_FRAME_SCHEMA = {
 VISUALIZE_POINT_SCHEMA = {
     "type": "object",
     "properties": {
+        **_STYLE_PROPS,
         "image": {"type": "string", "description": _IMAGE_DESC},
         "point": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3,
                   "description": "3D 点(base 系 x,y,z,m)"},
@@ -87,6 +95,7 @@ VISUALIZE_POINT_SCHEMA = {
 VISUALIZE_SEGMENT_SCHEMA = {
     "type": "object",
     "properties": {
+        **_STYLE_PROPS,
         "image": {"type": "string", "description": _IMAGE_DESC},
         "points": {
             "type": "array", "minItems": 2, "maxItems": 2,
@@ -104,6 +113,7 @@ VISUALIZE_SEGMENT_SCHEMA = {
 VISUALIZE_RAY_SCHEMA = {
     "type": "object",
     "properties": {
+        **_STYLE_PROPS,
         "image": {"type": "string", "description": _IMAGE_DESC},
         "origin": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3,
                    "description": "射线起点(base 系 x,y,z,m)"},
@@ -205,6 +215,10 @@ class PerceptionExecutorNode(Node):
         self.declare_parameter("draw_topic", "/nova/perception/draw")
         self.declare_parameter("draw_alpha", 0.45)
         self.declare_parameter("draw_supersample", 2)
+        self.declare_parameter("draw_outline", True)
+        self.declare_parameter("draw_outline_width", 2.0)
+        self.declare_parameter("draw_outline_color", [0, 0, 0])
+        self.declare_parameter("label_font_scale", 10.0)
         self.declare_parameter("arrow_radius", 0.006)
         self.declare_parameter("point_radius", 0.02)
         self.declare_parameter("axis_length", 0.1)
@@ -234,6 +248,10 @@ class PerceptionExecutorNode(Node):
         self._draw_topic = str(self.get_parameter("draw_topic").value)
         self._alpha = float(self.get_parameter("draw_alpha").value)
         self._supersample = int(self.get_parameter("draw_supersample").value)
+        self._outline = bool(self.get_parameter("draw_outline").value)
+        self._outline_width = float(self.get_parameter("draw_outline_width").value)
+        self._outline_color = _parse_color(self.get_parameter("draw_outline_color").value, (0, 0, 0))
+        self._label_font_scale = float(self.get_parameter("label_font_scale").value)
         self._arrow_radius = float(self.get_parameter("arrow_radius").value)
         self._point_radius = float(self.get_parameter("point_radius").value)
         self._axis_length = float(self.get_parameter("axis_length").value)
@@ -430,6 +448,23 @@ class PerceptionExecutorNode(Node):
             self._image_cache.pop(next(iter(self._image_cache)), None)
         return image_id
 
+    def _render(self, image, K, P, verts, faces, colors, params: dict) -> np.ndarray:
+        """按节点默认/工具参数渲染网格(alpha、描边可逐次覆盖)。"""
+        return vg.rasterize_mesh(
+            image, verts, faces, colors, K, P,
+            alpha=float(params.get("alpha", self._alpha)),
+            supersample=self._supersample,
+            outline=bool(params.get("outline", self._outline)),
+            outline_width=float(params.get("outline_width", self._outline_width)),
+            outline_color=_parse_color(params.get("outline_color"), self._outline_color),
+        )
+
+    def _label_font_px(self, K, Rt, anchor, radius) -> int:
+        """标签字号:只跟箭头半径有关(anchor 处半径的投影像素长度 × 系数)。"""
+        anchor = np.asarray(anchor, dtype=float)
+        px = vg.projected_length(K, Rt, anchor, anchor + np.array([radius, 0.0, 0.0]))
+        return int(np.clip(px * self._label_font_scale, 12, 64))
+
     def _finish_draw(self, image: np.ndarray, camera: str, source: str, tool: str) -> dict:
         """缓存并发布绘制结果,返回工具结果元数据。"""
         image_id = self._store_image(image, camera, source)
@@ -457,15 +492,16 @@ class PerceptionExecutorNode(Node):
         radius = float(params.get("radius", self._arrow_radius))
         segments = int(params.get("segments", self._segments))
         verts, faces, colors = vg.build_frame(origin, orientation, axis_length, radius, segments)
-        out = vg.rasterize_mesh(image, verts, faces, colors, K, P, self._alpha, self._supersample)
+        out = self._render(image, K, P, verts, faces, colors, params)
         if params.get("labels", True):
             R = vg.quat_to_matrix_xyzw(orientation)
             Rt = vg.decompose_projection(K, P)
+            font_px = self._label_font_px(K, Rt, origin, radius)
             for idx, (name, color) in enumerate(zip("xyz", ((255, 70, 70), (70, 200, 70), (70, 120, 255)))):
                 tip = origin + R @ np.eye(3)[:, idx] * axis_length
                 projected = vg.project_point_safe(K, Rt, tip)
                 if projected is not None:
-                    out = vg.draw_label(out, projected[:2], name, color)
+                    out = vg.draw_label(out, projected[:2], name, color, font_px=font_px)
         return self._finish_draw(out, cam, source, "visualize_frame")
 
     def _draw_point(self, params: dict) -> dict:
@@ -475,12 +511,14 @@ class PerceptionExecutorNode(Node):
         radius = float(params.get("radius", self._point_radius))
         color = _parse_color(params.get("color"), (255, 220, 0))
         verts, faces, colors = vg.build_sphere(point, radius, color, self._segments, max(4, self._segments // 2))
-        out = vg.rasterize_mesh(image, verts, faces, colors, K, P, self._alpha, self._supersample)
+        out = self._render(image, K, P, verts, faces, colors, params)
         label = params.get("label")
         if label:
-            projected = vg.project_point_safe(K, vg.decompose_projection(K, P), point)
+            Rt = vg.decompose_projection(K, P)
+            projected = vg.project_point_safe(K, Rt, point)
             if projected is not None:
-                out = vg.draw_label(out, projected[:2], str(label), color)
+                out = vg.draw_label(out, projected[:2], str(label), color,
+                                    font_px=self._label_font_px(K, Rt, point, radius))
         return self._finish_draw(out, cam, source, "visualize_point")
 
     def _draw_segment(self, params: dict) -> dict:
@@ -494,7 +532,7 @@ class PerceptionExecutorNode(Node):
         radius = float(params.get("radius", self._arrow_radius))
         color = _parse_color(params.get("color"), (80, 180, 255))
         verts, faces, colors = vg.build_cylinder(p0, p1, radius, self._segments, color)
-        out = vg.rasterize_mesh(image, verts, faces, colors, K, P, self._alpha, self._supersample)
+        out = self._render(image, K, P, verts, faces, colors, params)
         Rt = vg.decompose_projection(K, P)
         texts = []
         if params.get("show_distance", True):
@@ -502,9 +540,11 @@ class PerceptionExecutorNode(Node):
         if params.get("label"):
             texts.append(str(params["label"]))
         if texts:
-            mid = vg.project_point_safe(K, Rt, (p0 + p1) / 2.0)
+            mid_point = (p0 + p1) / 2.0
+            mid = vg.project_point_safe(K, Rt, mid_point)
             if mid is not None:
-                out = vg.draw_label(out, mid[:2], " ".join(texts), color)
+                out = vg.draw_label(out, mid[:2], " ".join(texts), color,
+                                    font_px=self._label_font_px(K, Rt, mid_point, radius))
         return self._finish_draw(out, cam, source, "visualize_segment")
 
     def _draw_ray(self, params: dict) -> dict:
@@ -517,13 +557,15 @@ class PerceptionExecutorNode(Node):
         color = _parse_color(params.get("color"), (255, 120, 40))
         verts, faces, colors = vg.build_arrow(origin, orientation, length, radius,
                                               segments=self._segments, color=color)
-        out = vg.rasterize_mesh(image, verts, faces, colors, K, P, self._alpha, self._supersample)
+        out = self._render(image, K, P, verts, faces, colors, params)
         label = params.get("label")
         if label:
+            Rt = vg.decompose_projection(K, P)
             tip = origin + vg.quat_to_matrix_xyzw(orientation) @ np.array([0.0, 0.0, length])
-            projected = vg.project_point_safe(K, vg.decompose_projection(K, P), tip)
+            projected = vg.project_point_safe(K, Rt, tip)
             if projected is not None:
-                out = vg.draw_label(out, projected[:2], str(label), color)
+                out = vg.draw_label(out, projected[:2], str(label), color,
+                                    font_px=self._label_font_px(K, Rt, origin, radius))
         return self._finish_draw(out, cam, source, "visualize_ray")
 
     # ---------- locate_object_3d ----------

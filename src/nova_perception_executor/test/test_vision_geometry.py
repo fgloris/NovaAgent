@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from nova_perception_executor import vision_geometry as vg
 
@@ -41,6 +42,15 @@ def test_build_arrow_rasterizes_onto_image():
     out = vg.rasterize_mesh(image, verts, faces, colors, K, P, alpha=0.5, supersample=2)
     assert out.shape == image.shape
     assert np.any(out != image)
+
+
+def test_arrow_head_length_is_independent_of_length():
+    radius = 0.006
+    for length in (0.1, 0.3):
+        verts, _, _ = vg.build_arrow([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], length, radius, segments=8)
+        zs = sorted({round(float(z), 6) for z in verts[:, 2]})
+        assert zs[-1] == pytest.approx(length)
+        assert zs[-2] == pytest.approx(length - radius * 6.0)
 
 
 def test_build_frame_and_cylinder_shapes():

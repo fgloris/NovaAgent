@@ -20,9 +20,13 @@ nova_perception_executor:
 
     # 可视化工具默认参数(工具调用参数可逐次覆盖)
     draw_topic: "/nova/perception/draw"   # 绘制结果发布话题
-    draw_alpha: 0.45                      # 半透明箭头 alpha
+    draw_alpha: 0.80                      # 半透明箭头 alpha
     draw_supersample: 2                   # 抗锯齿超采样倍数
-    arrow_radius: 0.006                   # 箭头杆半径(m)
+    draw_outline: true                    # 是否给箭头描边
+    draw_outline_width: 2.0               # 描边宽度(像素)
+    draw_outline_color: [0, 0, 0]         # 描边颜色(黑)
+    label_font_scale: 10.0                # 标签字号系数(字号只跟箭头半径有关)
+    arrow_radius: 0.006                   # 箭头杆半径(m);圆锥尺寸只跟它成比例
     point_radius: 0.02                    # 点小球半径(m)
     axis_length: 0.1                      # 坐标系轴长(m)
     segments: 16                          # 圆周分段数

@@ -180,3 +180,8 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
 ```
 
 1. 现在代码内太依赖所谓success状态了.这只是仿真环境的包装
+
+```
+ros2 action send_goal /nova_perception_executor/visualize_frame/execute nova_interfaces/action/MCPExecute \
+"{tool_name: visualize_frame, params_json: '{\"image\":\"robot0_agentview_right\",\"origin\":[0.2477,-0.0077,0.5845],\"orientation\":[0.6756,0.7265,0.1004,0.0756],\"axis_length\":0.1}', trace_id: dbg}" --feedback
+```
