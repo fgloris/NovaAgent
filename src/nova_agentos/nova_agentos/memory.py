@@ -306,6 +306,7 @@ class ContextBuilder:
         observation: dict | None,
         tools: list,
         skill_index: str = "",
+        robot_context: dict | None = None,
     ) -> list[dict]:
         # 组装 system、历史、当前任务、观测和工具上下文。
         tasks = session.context.get("_tasks", [])
@@ -314,8 +315,14 @@ class ContextBuilder:
         )
         context["system_prompt"] = session.context.get("system_prompt", "")
         session.context = context
+        system_prompt = session.context.get("system_prompt", "") or ""
+        if robot_context:
+            system_prompt += "\n\n# 机器人结构与约束\n" + str(robot_context.get("context_markdown", ""))
+            system_prompt += "\n\n机器人描述 JSON:\n" + json.dumps(robot_context.get("context_json", {}), ensure_ascii=False)
+            session.context["robot_description_sha256"] = robot_context.get("description_sha256", "")
+            session.context["robot_context_schema"] = robot_context.get("context_schema", "robot_context_v1")
         messages = [
-            {"role": "system", "content": session.context.get("system_prompt", "") or ""},
+            {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": (

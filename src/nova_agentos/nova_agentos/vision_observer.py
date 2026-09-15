@@ -43,6 +43,8 @@ class VisionObserver:
         self._lock = threading.Lock()
         self._obs: dict[str, Any] = {}
         self._frames: dict[str, tuple[np.ndarray, float]] = {}
+        self._robot_context: dict | None = None
+        self._robot_context_hash = ""
         self._subs: dict[str, Any] = {}
         self._info_cg = MutuallyExclusiveCallbackGroup()
         self._info_client = node.create_client(
@@ -87,6 +89,10 @@ class VisionObserver:
                 break
         return {"role": "user", "content": content}
 
+    def get_robot_context(self) -> dict | None:
+        with self._lock:
+            return dict(self._robot_context) if self._robot_context is not None else None
+
     def _obs_cb(self, msg: String) -> None:
         try:
             obs = json.loads(msg.data) if msg.data else {}
@@ -104,6 +110,15 @@ class VisionObserver:
             if not response or not response.success:
                 return
             info = json.loads(response.spec_json or "{}")
+            robot = info.get("robot") or {}
+            if robot.get("context_schema") == "robot_context_v1" and robot.get("context_markdown"):
+                new_hash = str(robot.get("description_sha256", ""))
+                with self._lock:
+                    changed = new_hash != self._robot_context_hash
+                    self._robot_context = dict(robot)
+                    self._robot_context_hash = new_hash
+                if changed:
+                    self.node.get_logger().info(f"loaded robot context: {robot.get('robot_type')} sha256={new_hash}")
             camera_names = sorted((info.get("obs_spec") or {}).get("cameras", {}).keys())
             if not camera_names:
                 camera_names = sorted((info.get("cameras") or {}).keys())

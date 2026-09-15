@@ -59,6 +59,7 @@ class TaskRunner:
         context_builder: ContextBuilder,
         on_state: Callable[[str, str, str, bool, str, str], None] | None,
         observation_provider: Callable[[], dict | None] | None,
+        robot_context_provider: Callable[[], dict | None] | None = None,
     ) -> None:
         self.task = task
         self.manager = session_manager
@@ -68,6 +69,7 @@ class TaskRunner:
         self.context_builder = context_builder
         self.on_state = on_state
         self.observation_provider = observation_provider
+        self.robot_context_provider = robot_context_provider
         self.runtime_messages: list[dict] = []
 
     def run(self) -> None:
@@ -90,6 +92,7 @@ class TaskRunner:
                     self._observation(),
                     tools,
                     skill_index=self.skills.index_text(),
+                    robot_context=self.robot_context_provider() if self.robot_context_provider else None,
                 )
                 messages.extend(self.runtime_messages)
                 self.manager.save_context(self.task.session_id, session.context)
@@ -237,6 +240,7 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         on_state: Callable[[str, str, str, bool, str, str], None] | None = None,
         observation_provider: Callable[[], dict | None] | None = None,
+        robot_context_provider: Callable[[], dict | None] | None = None,
         context_budget_tokens: int = 12000,
         context_compaction_enabled: bool = True,
         max_recent_tasks: int = 8,
@@ -285,6 +289,7 @@ class AgentLoop:
                     self.context_builder,
                     self.on_state,
                     self.observation_provider,
+                    robot_context_provider=self.robot_context_provider,
                 ).run()
             except Exception as exc:
                 if self.on_state:

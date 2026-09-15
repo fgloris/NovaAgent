@@ -9,7 +9,7 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32MultiArray
 
 from nova_common.env_bridge import EnvBridgeBase
-from nova_robot_description import load_robot_description, to_json
+from nova_robot_description import load_robot_description, to_json, to_markdown
 
 
 class RoboCasaBridgeNode(EnvBridgeBase):
@@ -45,7 +45,21 @@ class RoboCasaBridgeNode(EnvBridgeBase):
     def _extra_info(self) -> dict[str, Any]:
         info = dict(self.sim_info)
         info.setdefault("sim", "robocasa")
-        info["robot"] = to_json(self.robot_description)
+        robot = to_json(self.robot_description)
+        robot.update({
+            "description_name": "panda_omron",
+            "context_schema": "robot_context_v1",
+            "context_json": to_json(self.robot_description),
+            "context_markdown": to_markdown(self.robot_description),
+            "description_sha256": self.robot_description.source.get("sha256", ""),
+            "state_topics": {
+                "eef_pose": f"/{self.robot_id}/eef_pose",
+                "joint_states": f"/{self.robot_id}/joint_states",
+                "gripper_state": f"/{self.robot_id}/gripper_state",
+            },
+            "tf_enabled": False,
+        })
+        info["robot"] = robot
         return info
 
     def _publish_observation(self) -> None:

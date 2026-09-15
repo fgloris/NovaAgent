@@ -83,6 +83,7 @@ class AgentosNode(Node):
             session_manager=self.sessions,
             on_state=self._on_state,
             observation_provider=self.vision.snapshot_message,
+            robot_context_provider=self.vision.get_robot_context,
             context_budget_tokens=int(self.get_parameter("context_budget_tokens").value),
             context_compaction_enabled=bool(self.get_parameter("context_compaction_enabled").value),
             max_recent_tasks=int(self.get_parameter("max_recent_tasks").value),

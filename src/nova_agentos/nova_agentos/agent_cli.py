@@ -140,6 +140,9 @@ class AgentCliNode(Node):
         lines.append(f"state_keys={sorted((info.get('obs_spec') or {}).get('state', {}).keys())}")
         lines.append(f"cameras={sorted((info.get('obs_spec') or {}).get('cameras', {}).keys())}")
         lines.append(f"instruction={info.get('instruction')!r}")
+        robot = info.get("robot") or {}
+        if robot:
+            lines.append(f"robot={robot.get('robot_type')} base={robot.get('base_frame')} eef={robot.get('eef_frame')} sha256={robot.get('description_sha256', '')} tf_enabled={robot.get('tf_enabled', False)}")
         return "\n".join(lines)
 
     def ping_llm(self) -> str:
