@@ -1,0 +1,20 @@
+robot_id: robot0
+base_frame: robot0_base
+eef_frame: robot0_ee
+controller:
+  composite_type: HYBRID_MOBILE_BASE
+  arm: OSC_POSE
+  gripper: GRIP
+  base: JOINT_VELOCITY
+  torso: JOINT_POSITION
+  frequency_hz: 20
+safety:
+  max_linear_speed: 0.2
+  max_angular_speed: 1.0
+  workspace: {min: [-0.8, -0.8, 0.0], max: [0.8, 0.8, 1.2]}
+observation:
+  eef_position: robot0_base_to_eef_pos
+  eef_orientation: robot0_base_to_eef_quat
+  gripper_position: robot0_gripper_qpos
+action:
+  ordering: [base_motion, control_mode, end_effector_position, end_effector_rotation, gripper_close]

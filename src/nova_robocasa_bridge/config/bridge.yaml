@@ -12,3 +12,7 @@ robocasa_bridge:
     server_host: "127.0.0.1"
     server_port: 8766
     request_timeout_sec: 300.0
+    robot_id: robot0
+    robot_config: nova_robot_description/config/panda_omron.yaml
+    publish_robot_state: true
+    publish_simulation_metrics: false

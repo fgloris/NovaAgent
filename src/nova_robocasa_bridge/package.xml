@@ -15,6 +15,7 @@
   <exec_depend>builtin_interfaces</exec_depend>
   <exec_depend>nova_common</exec_depend>
   <exec_depend>nova_executor_raw</exec_depend>
+  <exec_depend>nova_robot_description</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

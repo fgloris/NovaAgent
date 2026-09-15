@@ -126,12 +126,14 @@ class RoboCasaSession:
         self.scene_config = scene_config or {}
         self.env = None
         self.env_config: dict[str, Any] | None = None
+        self.latest_obs: dict[str, Any] | None = None
 
     def reset(self, request: dict[str, Any]) -> dict[str, Any]:
         self._ensure_env(request)
         assert self.env is not None
         obs, info = self.env.reset(seed=int(request.get("seed", 0)))
         obs = self._prepare_obs(obs, info)
+        self.latest_obs = obs
         print(
             f"[robocasa] env reset: task description = {obs.get('state.instruction', '')!r}",
             flush=True,
@@ -151,6 +153,7 @@ class RoboCasaSession:
         action = action_vector_to_dict(np.asarray(request["action"], dtype=np.float32))
         obs, reward, terminated, truncated, info = self.env.step(action)
         obs = self._prepare_obs(obs, info)
+        self.latest_obs = obs
         return {
             "ok": True,
             "obs": obs,

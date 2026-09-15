@@ -15,6 +15,7 @@ def generate_launch_description():
             DeclareLaunchArgument("env_id", default_value="robocasa/PickPlaceCounterToCabinet"),
             DeclareLaunchArgument("server_host", default_value="127.0.0.1"),
             DeclareLaunchArgument("server_port", default_value="8766"),
+            DeclareLaunchArgument("robot_id", default_value="robot0"),
             Node(
                 package="nova_robocasa_bridge",
                 executable="robocasa_bridge_node",
@@ -29,6 +30,7 @@ def generate_launch_description():
                             LaunchConfiguration("server_port"),
                             value_type=int,
                         ),
+                        "robot_id": LaunchConfiguration("robot_id"),
                     },
                 ],
             )

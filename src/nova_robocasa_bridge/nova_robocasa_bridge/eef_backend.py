@@ -17,6 +17,15 @@ class RoboCasaEEFBackend:
         self.session = session
         self.robot_id = robot_id
 
+    def get_joint_state(self, robot_id: str | None = None) -> dict:
+        env = getattr(self.session, "env", None)
+        if env is None:
+            raise RuntimeError("backend_unavailable")
+        robot = env.unwrapped.robots[0]
+        ids = list(getattr(robot, "_ref_joint_pos_indexes", []))
+        qpos = getattr(env.sim.data, "qpos", [])
+        return {"name": list(getattr(robot, "joint_names", [])), "position": [float(qpos[i]) for i in ids]}
+
     def describe(self) -> dict:
         return {
             "robot_id": self.robot_id,
@@ -32,9 +41,15 @@ class RoboCasaEEFBackend:
         }
 
     def get_current_pose(self, robot_id: str) -> Pose:
+        obs = getattr(self.session, "latest_obs", None) if self.session is not None else None
+        if obs:
+            p, q = obs.get(f"{self.robot_id}_base_to_eef_pos"), obs.get(f"{self.robot_id}_base_to_eef_quat")
+            if p is not None and q is not None:
+                from nova_executor_raw.trajectory import normalize
+                return Pose(list(map(float, p[:3])), normalize(list(map(float, q[:4]))))
         if self.session is not None and hasattr(self.session, "get_eef_pose"):
             return self.session.get_eef_pose(robot_id)
-        return Pose([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
+        raise RuntimeError("eef_observation_unavailable")
 
     def transform_pose(self, pose: Pose, source_frame: str, target_frame: str) -> Pose:
         if source_frame == target_frame or self.session is None:
@@ -48,7 +63,10 @@ class RoboCasaEEFBackend:
     ) -> str | None:
         if self.session is None or not hasattr(self.session, "solve_ik"):
             return None
-        seed = None
+        try:
+            seed = self.get_joint_state().get("position")
+        except Exception:
+            seed = None
         for pose in trajectory:
             solution = self.session.solve_ik(self.robot_id, pose, seed=seed)
             if solution is None:

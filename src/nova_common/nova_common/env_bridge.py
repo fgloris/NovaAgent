@@ -1,5 +1,5 @@
-# 统一仿真桥节点基类。
-# 订阅 /nova/env/action_cmd,发布 /nova/env/obs|reward|success 与 /nova/env/camera/*/image_raw,
+# 统一环境桥节点基类。
+# 订阅 /nova/env/action_cmd,发布 /nova/env/obs 与 /nova/env/camera/*/image_raw,
 # 提供 /nova/env/info service 做自发现。子类只填 sim 特定细节。
 import json
 import os
@@ -13,7 +13,7 @@ import numpy as np
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage, Image
-from std_msgs.msg import Bool, Float32, Float32MultiArray, String
+from std_msgs.msg import Float32MultiArray, String
 from std_srvs.srv import Trigger
 
 from nova_common.jsonline import JsonLineClient
@@ -57,9 +57,6 @@ class EnvBridgeBase(Node):
         self.obs_spec: dict[str, Any] = {"state": {}, "cameras": {}}
         self.sim_info: dict[str, Any] = {}
         self.latest_action: Any = None
-        self.last_reward = 0.0
-        self.last_success = False
-        self.last_done = False
         self.step_count = 0
         self.camera_publishers: dict[str, Any] = {}
         self.compressed_publishers: dict[str, Any] = {}
@@ -70,8 +67,6 @@ class EnvBridgeBase(Node):
             Float32MultiArray, "/nova/env/action_cmd", self.action_callback, 10
         )
         self.obs_pub = self.create_publisher(String, "/nova/env/obs", 10)
-        self.reward_pub = self.create_publisher(Float32, "/nova/env/reward", 10)
-        self.success_pub = self.create_publisher(Bool, "/nova/env/success", 10)
 
         self.create_service(EnvInfo, "/nova/env/info", self.info_callback)
         self.create_service(Trigger, "/nova/env/reset", self.reset_callback)
@@ -114,9 +109,6 @@ class EnvBridgeBase(Node):
         response = self.client.request(self._build_reset_request())
         self._absorb_response(response)
         self.latest_action = self._zero_action()
-        self.last_reward = 0.0
-        self.last_success = bool(response.get("info", {}).get("success", False))
-        self.last_done = False
         self.step_count = 0
         self._ensure_camera_publishers(self.obs_spec.get("cameras", {}))
         self._publish_observation()
@@ -130,14 +122,6 @@ class EnvBridgeBase(Node):
         # 避免 VLA 发完最后一帧后被持续复用
         self.latest_action = self._zero_action()
         self._absorb_response(response)
-        reward = response.get("reward", 0.0)
-        done = response.get("terminated", False)
-        truncated = response.get("truncated", False)
-        info = response.get("info", {})
-
-        self.last_reward = float(reward)
-        self.last_success = bool(info.get("success", False))
-        self.last_done = bool(done or truncated)
         self.step_count += 1
         self._ensure_camera_publishers(self.obs_spec.get("cameras", {}))
         self._publish_observation()
@@ -221,9 +205,6 @@ class EnvBridgeBase(Node):
         payload.update(
             {
                 "step_count": self.step_count,
-                "reward": self.last_reward,
-                "success": self.last_success,
-                "done": self.last_done,
                 "instruction": self.obs.get("state.instruction", ""),
                 "action_spec": self.action_spec,
                 "state": {
@@ -240,14 +221,6 @@ class EnvBridgeBase(Node):
         obs_msg = String()
         obs_msg.data = json.dumps(payload, ensure_ascii=False)
         self.obs_pub.publish(obs_msg)
-
-        reward_msg = Float32()
-        reward_msg.data = self.last_reward
-        self.reward_pub.publish(reward_msg)
-
-        success_msg = Bool()
-        success_msg.data = self.last_success
-        self.success_pub.publish(success_msg)
 
         for name, publisher in self.camera_publishers.items():
             image = self.obs.get(f"video.{name}")

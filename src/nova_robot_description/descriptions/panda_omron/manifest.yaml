@@ -1,0 +1,12 @@
+schema_version: robot_description_v1
+robot_type: PandaOmron
+components:
+  mobile_base: omron_mobile_base.xml
+  arm: panda_arm.xml
+  gripper: panda_gripper.xml
+  controller: controller.json
+joint_groups:
+  mobile_base: [joint_mobile_forward, joint_mobile_side, joint_mobile_yaw]
+  torso: [joint_torso_height]
+  arm: [joint1, joint2, joint3, joint4, joint5, joint6, joint7]
+  gripper: [gripper0_right_finger_joint1, gripper0_right_finger_joint2]

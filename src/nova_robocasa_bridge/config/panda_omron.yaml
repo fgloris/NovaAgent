@@ -1,0 +1,19 @@
+robot_type: PandaOmron
+robot_id: robot0
+base_frame: robot0_base
+eef_frame: robot0_ee
+supports_gripper: true
+control_frequency_hz: 20
+controller:
+  type: BASIC
+  body_controller: OSC_POSE
+  hand_controller: JOINT_POSITION
+workspace:
+  min: [-0.8, -0.8, 0.0]
+  max: [0.8, 0.8, 1.2]
+max_linear_speed: 0.2
+max_angular_speed: 1.0
+max_linear_acceleration: 1.0
+max_angular_acceleration: 2.0
+joint_jump_threshold: 0.5
+joint_limits: []
