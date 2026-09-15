@@ -16,3 +16,5 @@ robocasa_bridge:
     robot_config: nova_robot_description/config/panda_omron.yaml
     publish_robot_state: true
     publish_simulation_metrics: false
+    # EEF action 反馈节流:每 N 个路径点发一次(首末必发);反馈只报进度,状态走话题。
+    feedback_stride: 5

@@ -3,7 +3,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from nova_robocasa_bridge.robocasa_sim_server import RoboCasaSession, wxyz_to_xyzw
+from nova_robocasa_bridge.robocasa_sim_server import (
+    RoboCasaSession,
+    _quat_to_matrix_xyzw,
+    base_frame_projection,
+    wxyz_to_xyzw,
+)
 
 
 class _Model:
@@ -31,6 +36,28 @@ def _session():
 
 def test_wxyz_is_converted_to_ros_xyzw():
     assert wxyz_to_xyzw([1.0, 0.1, 0.2, 0.3]) == [0.1, 0.2, 0.3, 1.0]
+
+
+def _project(projection, point):
+    homogeneous = np.asarray(projection, dtype=float) @ np.append(np.asarray(point, dtype=float), 1.0)
+    return homogeneous[0] / homogeneous[2], homogeneous[1] / homogeneous[2]
+
+
+def test_base_frame_projection_matches_world_composition():
+    p_world = np.array(
+        [
+            [600.0, 0.0, 128.0, 20.0],
+            [0.0, 600.0, 128.0, -10.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ]
+    )
+    base_position = np.array([0.4, -0.3, 0.85])
+    base_rotation = _quat_to_matrix_xyzw(wxyz_to_xyzw([0.9238795, 0.0, 0.0, 0.3826834]))
+    p_base = np.asarray(base_frame_projection(p_world, base_position, base_rotation))
+
+    x_base = np.array([0.1, 0.2, 0.3])
+    x_world = base_position + base_rotation @ x_base
+    assert _project(p_base, x_base) == pytest.approx(_project(p_world, x_world))
 
 
 def test_robot_state_uses_canonical_obs_and_real_joint_names():

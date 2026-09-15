@@ -27,7 +27,7 @@ class RosEEFBackend:
     def __init__(
         self,
         node,
-        action_name: str = "/nova/robocasa/eef_execute",
+        action_name: str = "/nova/robot0/eef_execute",
         robot_id: str = "robot0",
     ) -> None:
         self.node = node

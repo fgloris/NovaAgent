@@ -56,8 +56,10 @@ TCP 使用长度前缀的 JSON header + 二进制 ndarray body，支持 `reset`�
 
 ## EEF action 与机器人状态
 
-- `/nova/robocasa/eef_execute`（`nova_interfaces/action/EEFExecute`）在执行任何点前完成整条轨迹 IK 预检。
-- `/robot0/eef_pose`、`/robot0/joint_states`、`/robot0/gripper_state` 直接发布 sim server 构造的规范状态。
+- `/nova/{robot_id}/eef_execute`（默认 `/nova/robot0/eef_execute`，`nova_interfaces/action/EEFExecute`）在执行任何点前完成整条轨迹 IK 预检。
+- action feedback 只报进度（`waypoint/total`），按 `feedback_stride`（默认 5）节流；机器人状态不随 feedback 传，走下面的状态话题。
+- `/robot0/eef_pose`、`/robot0/joint_states`、`/robot0/gripper_state` 直接发布 sim server 构造的规范状态；AgentOS 经 `RobotStateObserver` 独立订阅注入。
+- `/nova/env/info` 的相机投影矩阵已折算到机器人 base 系，`locate_object_3d` 结果与 EEF 目标同系。
 - EEF action 执行期间暂停 timer 零动作步进，并忽略 VLA `/nova/env/action_cmd`，取消在最近的控制周期边界生效。
 
 ## 运行

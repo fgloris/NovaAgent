@@ -2,7 +2,7 @@
 """nova_preception_executor:感知类 MCP executor。
 
   常驻订阅 /nova/env/camera/* 滚动缓存最新帧;工具调用时查 /nova/env/info 取相机投影矩阵,
-  用 VLM 多视图网格/像素定位获得物体 3D 世界坐标(工具名 locate_object_3d)。
+  用 VLM 多视图网格/像素定位获得物体 3D 基座系坐标(工具名 locate_object_3d)。
 """
 import json
 import time
@@ -150,7 +150,7 @@ class PerceptionExecutorNode(Node):
             "先让 VLM 在各图上用网格单元粗定位并 DLT 三角化,再把结果画回调试图:"
             "蓝圈=VLM 标注的像素点(发给 VLM 的图只画蓝圈),红圈=系统重投影(仅调试图);"
             "让 VLM 以像素偏移量迭代微调,多视图误差低于阈值且完成像素微调后才允许其结束,"
-            "返回物体 3D 世界坐标(x,y,z)。"
+            "返回物体 3D 基座系坐标(x,y,z,与 /robot0/eef_pose 同系)。"
         )
         tool.params_schema_json = json.dumps(TOOL_SCHEMA, ensure_ascii=False)
         tool.action_server_name = f"/{self.get_name()}/locate_object_3d/execute"

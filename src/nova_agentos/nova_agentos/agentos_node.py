@@ -17,6 +17,7 @@ from nova_agentos.api_logger import ApiLogger
 from nova_agentos.agent_loop import AgentLoop
 from nova_agentos.mcp_adapter import McpAdapter
 from nova_agentos.memory import SessionManager
+from nova_agentos.robot_state_observer import RobotStateObserver
 from nova_agentos.skill_store import SkillStore
 from nova_agentos.vision_observer import VisionObserver
 
@@ -71,6 +72,9 @@ class AgentosNode(Node):
             max_image_size=int(self.get_parameter("vlm_max_image_size").value),
             jpeg_quality=int(self.get_parameter("vlm_jpeg_quality").value),
         )
+        self.robot_state = RobotStateObserver(
+            self, env_ns=str(self.get_parameter("env_ns").value)
+        )
         self.adapter = McpAdapter(
             self,
             list_tools_srv=str(self.get_parameter("list_tools_service").value),
@@ -88,6 +92,7 @@ class AgentosNode(Node):
             on_state=self._on_state,
             observation_provider=self.vision.snapshot_message,
             robot_context_provider=self.vision.get_robot_context,
+            robot_state_provider=self.robot_state.snapshot_message,
             context_budget_tokens=int(self.get_parameter("context_budget_tokens").value),
             context_compaction_enabled=bool(self.get_parameter("context_compaction_enabled").value),
             max_recent_tasks=int(self.get_parameter("max_recent_tasks").value),

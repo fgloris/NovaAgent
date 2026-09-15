@@ -314,7 +314,7 @@ class ContextBuilder:
         self,
         session: SessionRecord,
         current: TaskMemory,
-        observation: dict | None,
+        observation: dict | list[dict] | None,
         tools: list,
         skill_index: str = "",
         robot_context: dict | None = None,
@@ -345,7 +345,10 @@ class ContextBuilder:
             },
         ]
         if observation:
-            messages.append(observation)
+            if isinstance(observation, list):
+                messages.extend(item for item in observation if item)
+            else:
+                messages.append(observation)
         messages.append({"role": "user", "content": f"# 可用工具 schema\n{json.dumps(tools, ensure_ascii=False)}"})
         if compacted:
             current.add_event("context_compacted", message="历史任务已按预算压缩")

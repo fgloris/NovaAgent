@@ -37,8 +37,12 @@ class RoboCasaBridgeNode(EnvBridgeBase):
         self.seed = int(self.get_parameter("seed").value)
         self.declare_parameter("robot_id", "robot0")
         self.declare_parameter("publish_robot_state", True)
+        self.declare_parameter("eef_action_name", "")
+        self.declare_parameter("feedback_stride", 5)
         self.robot_id = str(self.get_parameter("robot_id").value)
         self.publish_robot_state = bool(self.get_parameter("publish_robot_state").value)
+        self.eef_action_name = str(self.get_parameter("eef_action_name").value) or f"/nova/{self.robot_id}/eef_execute"
+        self.feedback_stride = max(1, int(self.get_parameter("feedback_stride").value))
         self.robot_description = load_robot_description("panda_omron")
         self.eef_pub = self.create_publisher(PoseStamped, f"/{self.robot_id}/eef_pose", 10)
         self.joint_pub = self.create_publisher(JointState, f"/{self.robot_id}/joint_states", 10)
@@ -48,7 +52,7 @@ class RoboCasaBridgeNode(EnvBridgeBase):
         self._eef_action_server = ActionServer(
             self,
             EEFExecute,
-            "/nova/robocasa/eef_execute",
+            self.eef_action_name,
             execute_callback=self._execute_eef,
             cancel_callback=lambda _goal: CancelResponse.ACCEPT,
             callback_group=ReentrantCallbackGroup(),
@@ -230,15 +234,17 @@ class RoboCasaBridgeNode(EnvBridgeBase):
                     self.step_count += 1
                     self._ensure_camera_publishers(self.obs_spec.get("cameras", {}))
                     self._publish_observation()
-                    feedback = EEFExecute.Feedback()
-                    feedback.current_waypoint = index + 1
-                    feedback.total_waypoints = total
-                    feedback.status = "running"
-                    feedback.message = json.dumps(
-                        {"message": "executing", "robot_state": self.robot_state},
-                        ensure_ascii=False,
-                    )
-                    goal_handle.publish_feedback(feedback)
+                    # 反馈只报进度,机器人状态走独立话题/观测通道;按 stride 节流
+                    if index % self.feedback_stride == 0 or index == total - 1:
+                        feedback = EEFExecute.Feedback()
+                        feedback.current_waypoint = index + 1
+                        feedback.total_waypoints = total
+                        feedback.status = "running"
+                        feedback.message = json.dumps(
+                            {"waypoint": index + 1, "total": total},
+                            ensure_ascii=False,
+                        )
+                        goal_handle.publish_feedback(feedback)
                 payload = {
                     "success": True,
                     "executed_points": total,

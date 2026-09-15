@@ -61,6 +61,7 @@ class TaskRunner:
         on_state: Callable[[str, str, str, bool, str, str], None] | None,
         observation_provider: Callable[[], dict | None] | None,
         robot_context_provider: Callable[[], dict | None] | None = None,
+        robot_state_provider: Callable[[], dict | None] | None = None,
     ) -> None:
         self.task = task
         self.manager = session_manager
@@ -71,6 +72,7 @@ class TaskRunner:
         self.on_state = on_state
         self.observation_provider = observation_provider
         self.robot_context_provider = robot_context_provider
+        self.robot_state_provider = robot_state_provider
         self.runtime_messages: list[dict] = []
 
     def run(self) -> None:
@@ -91,7 +93,7 @@ class TaskRunner:
                 messages = self.context_builder.build(
                     session,
                     self.task,
-                    self._observation(),
+                    self._observations(),
                     tools,
                     skill_index=self.skills.index_text(),
                     robot_context=self.robot_context_provider() if self.robot_context_provider else None,
@@ -199,14 +201,22 @@ class TaskRunner:
         except Exception as exc:
             return f"工具执行失败: {exc}"
 
-    def _observation(self) -> dict | None:
-        """获取当前环境视觉观测(通常为一条多模态 user 消息);读取失败返回提示文本。"""
-        if self.observation_provider is None:
-            return None
-        try:
-            return self.observation_provider()
-        except Exception as exc:
-            return {"role": "user", "content": f"# 当前环境视觉观测\n读取失败: {exc}"}
+    def _observations(self) -> list[dict]:
+        """收集各观测 provider(视觉、机器人状态)的消息;单个 provider 失败不影响其它。"""
+        out: list[dict] = []
+        for label, provider in (
+            ("环境视觉观测", self.observation_provider),
+            ("机器人状态", self.robot_state_provider),
+        ):
+            if provider is None:
+                continue
+            try:
+                item = provider()
+            except Exception as exc:
+                item = {"role": "user", "content": f"# {label}\n读取失败: {exc}"}
+            if item:
+                out.append(item)
+        return out
 
     @staticmethod
     def _parse_args(tool_call: dict) -> dict:
@@ -246,6 +256,7 @@ class AgentLoop:
         on_state: Callable[[str, str, str, bool, str, str], None] | None = None,
         observation_provider: Callable[[], dict | None] | None = None,
         robot_context_provider: Callable[[], dict | None] | None = None,
+        robot_state_provider: Callable[[], dict | None] | None = None,
         context_budget_tokens: int = 12000,
         context_compaction_enabled: bool = True,
         max_recent_tasks: int = 8,
@@ -257,6 +268,7 @@ class AgentLoop:
         self.on_state = on_state
         self.observation_provider = observation_provider
         self.robot_context_provider = robot_context_provider
+        self.robot_state_provider = robot_state_provider
         self.context_builder = ContextBuilder(
             Compactor(context_budget_tokens, context_compaction_enabled, max_recent_tasks)
         )
@@ -300,6 +312,7 @@ class AgentLoop:
                     self.on_state,
                     self.observation_provider,
                     robot_context_provider=self.robot_context_provider,
+                    robot_state_provider=self.robot_state_provider,
                 ).run()
             except Exception as exc:
                 if self.on_state:

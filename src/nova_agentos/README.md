@@ -26,6 +26,7 @@ session start/resume → RunTask(session_id, 入队,立即返回 task_id)
 | `skill_store.py` | 扫描 `skills/<name>/{SKILL.yaml, SKILL.md}`,生成索引、按需加载正文 |
 | `agent_loop.py` | 后台持续循环:消费消息队列、调用 VLM、执行工具、维护持久上下文 |
 | `vision_observer.py` | 订阅 `/nova/env/obs` 与 `/nova/env/camera/*/image_raw`,为每轮规划生成多模态观测消息 |
+| `robot_state_observer.py` | 从 `/nova/env/info` 发现机器人状态话题并订阅,每轮注入最新 EEF/关节/夹爪状态(与工具无关) |
 | `mcp_adapter.py` | 与 executor_manager 通信(查询工具 + 发 action goal) |
 | `agentos_node.py` | ROS 2 节点:RunTask 入队服务 + agent_msg 消息发布 |
 | `agent_cli.py` | 终端聊天 CLI:发消息 + 实时查看 agent 消息 + 调试命令 |

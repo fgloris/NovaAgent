@@ -76,7 +76,6 @@ def _normalize_quat_xyzw(quaternion: Any) -> np.ndarray:
 
 def _orientation_to_quat_xyzw(orientation: Any) -> np.ndarray:
     """把多种姿态表示统一为 XYZW 四元数。
-
     兼容:3 维(轴角/旋转向量)、4 维(四元数)、6 维(两个基向量,先正交化)、9 维(旋转矩阵)。
     """
     value = np.asarray(orientation, dtype=float).reshape(-1)
@@ -147,6 +146,20 @@ def _rotation_error(target: np.ndarray, current: np.ndarray) -> np.ndarray:
         error[0, 2] - error[2, 0],
         error[1, 0] - error[0, 1],
     ])
+
+
+def base_frame_projection(
+    projection_world: Any, base_position: Any, base_rotation: Any
+) -> list[list[float]]:
+    """世界系 3x4 投影矩阵 -> base 系。
+
+    X_world = T_world_base @ X_base,pixel = P_world @ T @ X_base,故 P_base = P_world @ T。
+    """
+    p = np.asarray(projection_world, dtype=float).reshape(3, 4)
+    t = np.eye(4)
+    t[:3, :3] = np.asarray(base_rotation, dtype=float).reshape(3, 3)
+    t[:3, 3] = np.asarray(base_position, dtype=float).reshape(3)
+    return (p @ t).tolist()
 
 
 def action_vector_to_dict(values: np.ndarray) -> dict[str, list[float]]:
@@ -465,11 +478,16 @@ class RoboCasaSession:
             raise RuntimeError("arm_joint_indexes_unavailable")
         return qpos, qvel
 
-    def _target_world(self, waypoint: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
-        """把路径点从基座坐标系变换到世界坐标系,返回 (世界位置, 世界旋转矩阵)。"""
+    def _base_pose_world(self) -> tuple[np.ndarray, np.ndarray]:
+        """返回机器人在世界系下的 (base_position, base_rotation)。"""
         robot = self.env.unwrapped.robots[0]
         base_position = np.asarray(getattr(robot, "base_pos", [0.0, 0.0, 0.0]), dtype=float)
         base_rotation = _quat_to_matrix_xyzw(wxyz_to_xyzw(getattr(robot, "base_ori", [1.0, 0.0, 0.0, 0.0])))
+        return base_position, base_rotation
+
+    def _target_world(self, waypoint: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+        """把路径点从基座坐标系变换到世界坐标系,返回 (世界位置, 世界旋转矩阵)。"""
+        base_position, base_rotation = self._base_pose_world()
         return (base_position + base_rotation @ waypoint["position"],
                 base_rotation @ _quat_to_matrix_xyzw(waypoint["orientation"]))
 
@@ -656,13 +674,13 @@ class RoboCasaSession:
             "robots": config.get("robots", "PandaOmron"),
             "controller": controller,
             "env_id": config.get("env_id", ""),
+            "base_frame": "robot0_base",
             "cameras": cameras,
         }
 
     @staticmethod
     def _camera_names(model: Any) -> list[str]:
         """取 mujoco 模型里的全部相机名。
-
         robosuite 的 sim.model 是 binding_utils 包装类,底层 mujoco.MjModel 在 ._model,
         mj_id2name 只接受它(枚举类型需先转 int)。
         """
@@ -680,7 +698,8 @@ class RoboCasaSession:
         """按 robosuite camera_utils 约定计算各相机的内参与投影矩阵,供感知 executor 三角化定位。
 
         intrinsics: 3x3 内参(fx=fy=0.5*H/tan(fovy/2),主点在图像中心);
-        projection: 3x4 世界->像素投影矩阵,project(X)=P@[X;1],归一化后 col=x/z, row=y/z。
+        projection: 3x4 base->像素投影矩阵,project(X)=P@[X;1],归一化后 col=x/z, row=y/z。
+        投影矩阵已折算到机器人 base 系,三角化结果直接是 base 系坐标(与 raw executor 一致)。
         键为 mujoco 模型相机名,与 obs 的 video.* 键一致(robocasa 相机名即 model cam 名)。
         """
         config = self.env_config or {}
@@ -688,6 +707,7 @@ class RoboCasaSession:
         width = int(config.get("camera_width", 256))
         sim = self.env.unwrapped.sim
         model = sim.model
+        base_position, base_rotation = self._base_pose_world()
         out: dict[str, Any] = {}
         for cam_id, name in enumerate(self._camera_names(model)):
             if not name:
@@ -706,7 +726,7 @@ class RoboCasaSession:
                 p = k @ np.linalg.inv(r_ext)[:3, :4]
                 out[name] = {
                     "intrinsics": k.tolist(),
-                    "projection": p.tolist(),
+                    "projection": base_frame_projection(p, base_position, base_rotation),
                 }
             except Exception as exc:
                 print(f"[robocasa] camera {name} projection failed: {exc}", flush=True)

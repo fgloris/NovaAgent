@@ -73,12 +73,14 @@ class ExecutorRawNode(Node):
     def __init__(self):
         """创建 MCP action server 并启动能力心跳。"""
         super().__init__("nova_executor_raw")
-        self.declare_parameter("eef_action_name", "/nova/robocasa/eef_execute")
+        self.declare_parameter("eef_action_name", "")
         self.declare_parameter("robot_id", "robot0")
+        robot_id = str(self.get_parameter("robot_id").value)
+        action_name = str(self.get_parameter("eef_action_name").value) or f"/nova/{robot_id}/eef_execute"
         self.backend = RosEEFBackend(
             self,
-            action_name=str(self.get_parameter("eef_action_name").value),
-            robot_id=str(self.get_parameter("robot_id").value),
+            action_name=action_name,
+            robot_id=robot_id,
         )
         callback_group = ReentrantCallbackGroup()
         self._servers = []
