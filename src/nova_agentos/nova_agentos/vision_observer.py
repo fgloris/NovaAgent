@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-# AgentOS 视觉观测缓存:订阅 /nova/env/obs 与当前环境声明的多路相机帧,
-# 在规划回合前生成 OpenAI 兼容的多模态 user message。
+"""AgentOS 视觉观测缓存:订阅 /nova/env/obs 与当前环境声明的多路相机帧,
+
+在规划回合前生成 OpenAI 兼容的多模态 user message。
+"""
 from __future__ import annotations
 
 import base64
@@ -23,6 +25,8 @@ _CAM_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
 
 
 class VisionObserver:
+    """滚动缓存环境 obs 与各相机最新帧,按需生成多模态观测消息和机器人上下文。"""
+
     def __init__(
         self,
         node: Node,
@@ -57,12 +61,14 @@ class VisionObserver:
         node.create_timer(2.0, self.refresh_cameras)
 
     def refresh_cameras(self) -> None:
+        """异步查询 /nova/env/info,发现新相机与机器人上下文。"""
         if not self._info_client.service_is_ready():
             return
         future = self._info_client.call_async(EnvInfo.Request())
         future.add_done_callback(self._info_done)
 
     def snapshot_message(self) -> dict | None:
+        """生成一条 OpenAI 兼容的多模态 user 消息(文本摘要 + 各相机图像)。"""
         with self._lock:
             obs = dict(self._obs)
             frames = dict(self._frames)
@@ -90,10 +96,12 @@ class VisionObserver:
         return {"role": "user", "content": content}
 
     def get_robot_context(self) -> dict | None:
+        """返回最近一次刷新到的机器人结构上下文(可能为 None)。"""
         with self._lock:
             return dict(self._robot_context) if self._robot_context is not None else None
 
     def _obs_cb(self, msg: String) -> None:
+        """缓存 /nova/env/obs 的 JSON,并按其中声明的相机名补齐订阅。"""
         try:
             obs = json.loads(msg.data) if msg.data else {}
         except Exception:
@@ -105,6 +113,7 @@ class VisionObserver:
             self._ensure_camera_sub(cam)
 
     def _info_done(self, future) -> None:
+        """处理 EnvInfo 响应:更新机器人上下文,并为发现的相机建立订阅。"""
         try:
             response = future.result()
             if not response or not response.success:
@@ -129,6 +138,7 @@ class VisionObserver:
             self._ensure_camera_sub(cam)
 
     def _ensure_camera_sub(self, cam: str) -> None:
+        """为指定相机懒创建 image_raw 订阅(已订阅则跳过)。"""
         cam = str(cam).strip()
         if not cam:
             return
@@ -143,6 +153,7 @@ class VisionObserver:
         self.node.get_logger().info(f"AgentOS VLM 订阅相机: {topic}")
 
     def _make_cam_cb(self, cam: str):
+        """为指定相机生成订阅回调,解码后连时间戳一起缓存。"""
         def cb(msg: Image) -> None:
             try:
                 frame = self._image_msg_to_numpy(msg)
@@ -156,6 +167,7 @@ class VisionObserver:
 
     @staticmethod
     def _image_msg_to_numpy(msg: Image) -> np.ndarray:
+        """把 ROS Image(rgb8/bgr8)消息转成 RGB 的 HxWx3 numpy 数组。"""
         if msg.encoding not in ("rgb8", "bgr8"):
             raise ValueError(f"暂不支持 encoding={msg.encoding!r}, 需要 rgb8/bgr8")
         frame = np.frombuffer(msg.data, dtype=np.uint8).reshape((msg.height, msg.width, 3))
@@ -164,6 +176,7 @@ class VisionObserver:
         return np.ascontiguousarray(frame)
 
     def _image_to_data_url(self, image: np.ndarray) -> str:
+        """等比缩小后编码为 data:image/jpeg;base64 字符串。"""
         if image.dtype != np.uint8:
             image = np.clip(image, 0, 255).astype(np.uint8)
         h, w = image.shape[:2]
@@ -184,6 +197,7 @@ class VisionObserver:
 
     @staticmethod
     def _snapshot_text(obs: dict[str, Any], frames: dict[str, tuple[np.ndarray, float]], cameras: list[str]) -> str:
+        """生成观测文本摘要:精简后的 obs JSON + 各相机状态(尺寸与帧龄)。"""
         slim = dict(obs)
         if "state" in slim:
             slim["state"] = _trim_jsonish(slim["state"], max_chars=2500)
@@ -206,6 +220,7 @@ class VisionObserver:
 
 
 def _trim_jsonish(value: Any, max_chars: int) -> Any:
+    """若值的 JSON 文本超过 max_chars,则截断成字符串,否则原样返回。"""
     text = json.dumps(value, ensure_ascii=False)
     if len(text) <= max_chars:
         return value

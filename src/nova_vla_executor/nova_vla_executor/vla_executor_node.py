@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-# VLA executor bridge:本地 ROS2 侧,连接远程 pi0 推理服务。
-# 静态绑定 /nova/env/*:启动时常驻订阅 env 相机/state,滚动缓存最新帧;
-# pi0_policy 被调用时直接用缓存推理,把动作回灌到 /nova/env/action_cmd。
+"""VLA executor bridge:本地 ROS2 侧,连接远程 pi0 推理服务。
+
+静态绑定 /nova/env/*:启动时常驻订阅 env 相机/state,滚动缓存最新帧;
+pi0_policy 被调用时直接用缓存推理,把动作回灌到 /nova/env/action_cmd。
+"""
 import json
 import time
 
@@ -25,10 +27,13 @@ _CAM_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
 
 
 def _image_to_numpy(msg: Image) -> np.ndarray:
+    """把 ROS Image(rgb8)消息转成 HxWx3 的 uint8 numpy 数组。"""
     return np.frombuffer(msg.data, dtype=np.uint8).reshape((msg.height, msg.width, 3))
 
 
 class VLAExecutorNode(Node):
+    """提供 pi0_policy 工具:用缓存的观测调用远程 pi0 推理并回灌动作。"""
+
     def __init__(self) -> None:
         super().__init__("nova_vla_executor")
         self.declare_parameter("server_url", "http://127.0.0.1:8767")
@@ -78,6 +83,7 @@ class VLAExecutorNode(Node):
         )
 
     def _publish_heartbeat(self) -> None:
+        """周期性发布心跳,向 agent 声明本 executor 提供的 pi0_policy 工具。"""
         hb = ExecutorHeartbeat()
         hb.executor_name = self.get_name()
         tool = ToolDescriptor()
@@ -105,6 +111,7 @@ class VLAExecutorNode(Node):
         self._heartbeat_pub.publish(hb)
 
     def _execute_cb(self, goal_handle):
+        """Action 回调:解析参数执行策略,成功 succeed、异常 abort。"""
         goal = goal_handle.request
         try:
             params = json.loads(goal.params_json) if goal.params_json else {}
@@ -126,6 +133,7 @@ class VLAExecutorNode(Node):
             return result
 
     def _run_policy(self, params: dict) -> dict:
+        """策略主循环:每有新观测步就推理一次,连续执行 replan_steps 步,直到超时或步数上限。"""
         instruction_override = str(params.get("instruction", "")).strip() or None
         buf = self._buf
         if not buf["frames"] or buf["doc"] is None:
@@ -200,12 +208,13 @@ class VLAExecutorNode(Node):
         }
 
     def _publish_action(self, values) -> None:
+        """把动作向量发布到 /nova/env/action_cmd。"""
         msg = Float32MultiArray()
         msg.data = np.asarray(values, dtype=np.float32).tolist()
         self._action_pub.publish(msg)
 
-    # 按 state_keys 从 obs JSON 的 state 摘取并拼接 state 向量;键缺失则跳过
     def _build_state_vector(self, buf: dict) -> np.ndarray | None:
+        """按 state_keys 从 obs JSON 的 state 摘取并拼接 state 向量;键缺失则跳过。"""
         state = (buf["doc"] or {}).get("state") or {}
         values = []
         for key in self.state_keys:
@@ -227,12 +236,14 @@ class VLAExecutorNode(Node):
         return None
 
     def _make_cam_cb(self, cam: str):
+        """为指定相机生成订阅回调,滚动缓存最新一帧。"""
         def cb(msg):
             self._buf["frames"][cam] = _image_to_numpy(msg)
 
         return cb
 
     def _make_obs_cb(self):
+        """生成 /nova/env/obs 订阅回调,解析并缓存 step/doc/动作维度。"""
         def cb(msg):
             try:
                 doc = json.loads(msg.data)
@@ -247,15 +258,18 @@ class VLAExecutorNode(Node):
         return cb
 
     def destroy_node(self) -> bool:
+        """销毁节点前关闭远程推理连接。"""
         self.client.close()
         return super().destroy_node()
 
 
 def main(args=None) -> int:
+    """用 MultiThreadedExecutor 运行 VLA 节点。
+
+    策略执行期间(阻塞在推理)心跳/订阅仍由其它线程驱动,避免 executor_manager 把工具判下线。
+    """
     rclpy.init(args=args)
     node = VLAExecutorNode()
-    # MultiThreadedExecutor:策略执行期间(阻塞在推理)心跳/订阅仍由其它线程驱动,
-    # 避免 executor_manager 把工具判下线
     executor = MultiThreadedExecutor()
     executor.add_node(node)
     try:

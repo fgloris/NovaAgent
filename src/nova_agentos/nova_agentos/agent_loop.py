@@ -1,4 +1,4 @@
-"""Serial AgentOS task runtime."""
+"""串行的 AgentOS 任务运行时。"""
 from __future__ import annotations
 
 import json
@@ -47,8 +47,9 @@ LOAD_SKILL_TOOL = {
     },
 }
 
-# 运行单个任务
 class TaskRunner:
+    """执行单个任务的 ReAct 循环:构造上下文 -> LLM 决策 -> 调工具,直到 finish 或超限。"""
+
     def __init__(
         self,
         task: TaskMemory,
@@ -73,6 +74,7 @@ class TaskRunner:
         self.runtime_messages: list[dict] = []
 
     def run(self) -> None:
+        """任务主循环:每轮把最新上下文与观测喂给 LLM,执行其请求的工具调用。"""
         self._event("status", "working", f"收到指令: {self.task.instruction}")
         try:
             descriptors = self.adapter.fetch_tools()
@@ -127,7 +129,7 @@ class TaskRunner:
                     self._finish("success", result.content or "模型返回文本，任务等待后续指令")
                     return
                 
-                # 处理 tool calls
+                # 依次处理本轮的所有 tool calls
                 for tool_call in result.tool_calls:
                     name = tool_call["function"]["name"]
                     args = self._parse_args(tool_call)
@@ -172,6 +174,7 @@ class TaskRunner:
             self._finish("failed", f"agent loop 异常: {exc}")
 
     def _run_tool(self, name: str, args: dict) -> str:
+        """执行一次工具调用:load_skill 本地处理,其余转发给 MCP adapter;异常返回失败文本。"""
         try:
             if name == "load_skill":
                 skill = args.get("skill", "")
@@ -197,6 +200,7 @@ class TaskRunner:
             return f"工具执行失败: {exc}"
 
     def _observation(self) -> dict | None:
+        """获取当前环境视觉观测(通常为一条多模态 user 消息);读取失败返回提示文本。"""
         if self.observation_provider is None:
             return None
         try:
@@ -206,18 +210,19 @@ class TaskRunner:
 
     @staticmethod
     def _parse_args(tool_call: dict) -> dict:
+        """解析 tool_call 的 JSON 参数;解析失败返回空 dict。"""
         try:
             return json.loads(tool_call["function"]["arguments"])
         except (json.JSONDecodeError, TypeError, KeyError):
             return {}
 
-    # 用于debug, 向 /agent_msg 发送话题
     def _event(self, kind: str, status: str, message: str, done: bool = False) -> None:
+        """通过 on_state 回调上报一次状态事件(用于 debug 与向 /agent_msg 发话题)。"""
         if self.on_state:
             self.on_state(self.task.task_id, self.task.session_id, status, message, done, kind)
 
-    # 结束此次任务
     def _finish(self, outcome: str, summary: str) -> None:
+        """结束本次任务:写入结果与总结,把任务上下文回存到 session,并上报完成事件。"""
         self.task.finish(outcome, summary)
         self.manager.save_task(self.task)
         session = self.manager.get(self.task.session_id, allow_ended=True)
@@ -230,7 +235,7 @@ class TaskRunner:
 
 
 class AgentLoop:
-    # 全局任务 FIFO 队列
+    """单后台线程消费全局任务 FIFO 队列,逐个交给 TaskRunner 串行执行。"""
 
     def __init__(
         self,
@@ -260,20 +265,24 @@ class AgentLoop:
         self._running = False
 
     def start(self) -> None:
+        """启动后台任务消费线程。"""
         self._running = True
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
+        """停止消费线程并等待其退出(最多 3 秒)。"""
         self._running = False
         self.queue.put(None)
         if self._thread and self._thread is not threading.current_thread():
             self._thread.join(timeout=3.0)
 
     def submit(self, task_id: str, session_id: str, instruction: str) -> None:
+        """把任务加入队列,交由后台线程执行。"""
         self.queue.put((task_id, session_id, instruction))
 
     def _run(self) -> None:
+        """后台线程主体:不断从队列取任务并运行,取到 None 哨兵时退出。"""
         while self._running:
             item = self.queue.get()
             if item is None:

@@ -1,5 +1,7 @@
-# 统一 LLM 配置加载。
-# 查找顺序:环境变量 NOVA_LLM_CONFIG -> 包内 share/nova_common/config/llm.yaml。
+"""统一 LLM 配置加载。
+
+查找顺序:环境变量 NOVA_LLM_CONFIG -> 包内 share/nova_common/config/llm.yaml。
+"""
 import os
 from pathlib import Path
 
@@ -11,6 +13,7 @@ except Exception:  # 未 source ROS 环境时退化为相对路径
 
 
 def find_config_path() -> Path | None:
+    """按优先级查找 llm.yaml:环境变量、安装后的 share 目录、源码内相对路径。"""
     env = os.environ.get("NOVA_LLM_CONFIG")
     if env:
         p = Path(env)
@@ -28,6 +31,7 @@ def find_config_path() -> Path | None:
 
 
 def load() -> dict:
+    """读取并解析 llm.yaml;找不到配置文件时抛 RuntimeError。"""
     path = find_config_path()
     if path is None:
         raise RuntimeError("找不到 llm.yaml(可设置环境变量 NOVA_LLM_CONFIG 或先构建 nova_common)")

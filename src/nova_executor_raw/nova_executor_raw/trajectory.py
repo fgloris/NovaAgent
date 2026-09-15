@@ -28,7 +28,7 @@ def normalize(q):
 
 
 def quat_mul(a, b):
-    """按 XYZW 顺序计算两个四元数的乘积。"""
+    """按 XYZW 顺序计算两个四元数的乘积(Hamilton 积),结果表示先 b 后 a 的复合旋转。"""
     ax, ay, az, aw = a
     bx, by, bz, bw = b
     return [
@@ -40,12 +40,19 @@ def quat_mul(a, b):
 
 
 def rotate(q, v):
-    """使用四元数旋转三维向量。"""
+    """用单位四元数 q 旋转三维向量 v(计算 q * [v,0] * q⁻¹,取虚部)。
+
+    四元数共轭即逆(单位四元数),故 [-x,-y,-z,w] 就是 q⁻¹。
+    """
     return quat_mul(quat_mul(q, [*v, 0]), [-q[0], -q[1], -q[2], q[3]])[:3]
 
 
 def compose(base, delta):
-    """将相对位姿增量合成到基准位姿上。"""
+    """把相对位姿增量合成到基准位姿上,返回新的绝对位姿。
+
+    位置:基准位置 + 基准姿态旋转后的增量位移;
+    姿态:基准姿态与增量姿态的四元数乘积(先 base 再 delta)。
+    """
     r = rotate(base.orientation, delta.position)
     return Pose(
         [base.position[i] + r[i] for i in range(3)],
@@ -55,7 +62,10 @@ def compose(base, delta):
 
 
 def slerp(a, b, t):
-    """在两个四元数之间执行球面线性插值。"""
+    """在两个四元数之间做球面线性插值(SLERP),t=0 取 a、t=1 取 b。
+
+    点积为负时先翻转 b 以走短弧;夹角极小时退化为线性插值避免除零。
+    """
     a, b = normalize(a), normalize(b)
     d = sum(x * y for x, y in zip(a, b))
     if d < 0:
@@ -71,7 +81,11 @@ def slerp(a, b, t):
 
 
 def interpolate(poses, linear_speed=0.1, angular_speed=0.5, hz=20):
-    """生成位置线性、姿态 SLERP 的离散轨迹点。"""
+    """在相邻路径点之间插值,生成位置线性、姿态 SLERP 的离散轨迹点。
+
+    每段的时长取"位移/线速度""转角/角速度""1/hz"三者的最大值,
+    再按 hz 离散出若干步,保证运动速度不超上限且至少有一帧。
+    """
     if not poses:
         raise ValueError("empty_waypoints")
     out = []

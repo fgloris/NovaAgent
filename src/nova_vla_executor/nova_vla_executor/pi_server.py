@@ -150,8 +150,8 @@ def _load_engine(checkpoint_dir: str, model_id: str):
     return policy
 
 
-# 按 header["images"] 顺序切分 body,还原为 numpy 数组
 def _split_body(header: dict, body: bytes) -> dict[str, np.ndarray]:
+    """按 header["images"] 的顺序切分 body,把图像原始字节还原为 numpy 数组。"""
     images = {}
     offset = 0
     for name, meta in (header.get("images") or {}).items():
@@ -171,6 +171,7 @@ def _action_chunk_from_output(out: dict) -> np.ndarray:
 
 
 def build_app(checkpoint_dir: str, model_id: str, obs_key_map: dict[str, str]):
+    """加载 pi0 策略并构建 FastAPI 应用,暴露 /healthz 与 /predict WebSocket。"""
     import fastapi
     from fastapi import WebSocket, WebSocketDisconnect
 
@@ -230,6 +231,7 @@ def build_app(checkpoint_dir: str, model_id: str, obs_key_map: dict[str, str]):
 
 
 def _parse_obs_key_map(items: list[str]) -> dict[str, str]:
+    """在默认映射基础上应用命令行 "相机名=模型键" 覆盖,返回最终观测键映射。"""
     mapping = dict(DEFAULT_OBS_KEY_MAP)
     for item in items:
         if "=" in item:
@@ -239,6 +241,7 @@ def _parse_obs_key_map(items: list[str]) -> dict[str, str]:
 
 
 def main() -> int:
+    """解析参数、确定 checkpoint 并启动 uvicorn 推理服务。"""
     parser = argparse.ArgumentParser(description="pi0/pi0.5 推理 server(robocasa/openpi环境,无 ROS2,WebSocket 二进制)")
     parser.add_argument(
         "--config",

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""随机动作客户端:周期性向 /nova/env/action_cmd 发随机动作,用于冒烟测试。"""
 from __future__ import annotations
 import random
 import rclpy
@@ -7,6 +8,8 @@ from std_msgs.msg import Float32MultiArray
 
 
 class RandomActionClient(Node):
+    """按固定频率发布小幅随机动作(夹爪维取 0/1)。"""
+
     def __init__(self) -> None:
         super().__init__("nova_random_action_client")
         self.pub = self.create_publisher(Float32MultiArray, "/nova/env/action_cmd", 10)
@@ -19,6 +22,7 @@ class RandomActionClient(Node):
         self.timer = self.create_timer(1.0 / max(rate_hz, 0.1), self.tick)
 
     def tick(self) -> None:
+        """生成并发布一帧随机动作。"""
         values = [random.uniform(-self.scale, self.scale) for _ in range(self.dim)]
         if self.dim > 6:
             values[6] = random.choice([0.0, 1.0])
@@ -28,6 +32,7 @@ class RandomActionClient(Node):
 
 
 def main(args=None) -> int:
+    """初始化 ROS 并运行随机动作节点。"""
     rclpy.init(args=args)
     node = RandomActionClient()
     try:

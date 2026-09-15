@@ -1,12 +1,14 @@
-# VLM 多视图定位循环状态机。
-#   第1轮:图上叠网格,让 VLM 给出各图网格单元(默认取中心像素)-> DLT 三角化 -> 重投影误差检查。
-#   每轮分别维护两套像素位置:VLM 原始标注点(蓝圈)与系统 3D 定位在各图的重投影点(红圈)。
-#   发给 VLM 的图只画蓝圈(它自己标的位置),红圈仅画在调试图上供人工观察。
-#   第2轮起:让 VLM 给出把蓝色圈移向物体所需的像素偏移量(dx, dy),由系统累加到蓝点后重新三角化。
-#   设计:每一轮(即使误差超阈值)都照常采纳、继续迭代,交由 VLM 自行修正跨视图不一致;
-#   converged 仅表示"本轮误差<=阈值",结束条件 = converged 且至少完成一轮像素微调,
-#   满足后才允许 VLM 返回 done,否则提示词不给 done、只让其继续优化。
-#   仅非有限值(点可能在相机后方)才回退上一轮状态重试;重试耗尽或达到最大轮数仍不满足结束条件则判失败。
+"""VLM 多视图定位循环状态机。
+
+  第1轮:图上叠网格,让 VLM 给出各图网格单元(默认取中心像素)-> DLT 三角化 -> 重投影误差检查。
+  每轮分别维护两套像素位置:VLM 原始标注点(蓝圈)与系统 3D 定位在各图的重投影点(红圈)。
+  发给 VLM 的图只画蓝圈(它自己标的位置),红圈仅画在调试图上供人工观察。
+  第2轮起:让 VLM 给出把蓝色圈移向物体所需的像素偏移量(dx, dy),由系统累加到蓝点后重新三角化。
+  设计:每一轮(即使误差超阈值)都照常采纳、继续迭代,交由 VLM 自行修正跨视图不一致;
+  converged 仅表示"本轮误差<=阈值",结束条件 = converged 且至少完成一轮像素微调,
+  满足后才允许 VLM 返回 done,否则提示词不给 done、只让其继续优化。
+  仅非有限值(点可能在相机后方)才回退上一轮状态重试;重试耗尽或达到最大轮数仍不满足结束条件则判失败。
+"""
 import json
 import time
 
@@ -30,6 +32,7 @@ _BLUE = (100, 100, 255)
 
 
 def _extract_text(result) -> str:
+    """从 LLM 返回结果中提取纯文本(兼容字符串/多模态 content 列表两种形式)。"""
     try:
         content = result.raw["choices"][0]["message"].get("content") or ""
     except Exception:
@@ -42,6 +45,7 @@ def _extract_text(result) -> str:
 
 
 def _extract_json(text):
+    """从模型回复里提取 JSON:先直接解析,失败再按括号配对截取最外层对象/数组。"""
     text = text.strip()
     try:
         return json.loads(text)
@@ -66,6 +70,8 @@ def _extract_json(text):
 
 
 class VlmLocator:
+    """用 VLM 在多个视角上标注像素,再经 DLT 三角化求物体 3D 世界坐标的状态机。"""
+
     def __init__(
         self,
         llm,
@@ -90,6 +96,11 @@ class VlmLocator:
         on_round=None,
         on_images=None,
     ) -> dict:
+        """执行完整定位流程:网格粗定位 -> 多轮像素微调 -> 三角化,返回 3D 位置与误差。
+
+        至少需要 2 个同时提供图像与投影矩阵的相机。on_round/on_images 为可选回调,
+        用于把每轮的提示词、回复与标注图发布到调试话题。
+        """
         cams = [c for c in images if c in projections]
         if len(cams) < 2:
             return {"ok": False, "error": f"可用相机不足(需要>=2 且都有投影矩阵,现有 {cams})"}
@@ -151,8 +162,8 @@ class VlmLocator:
         self._emit_final(out)
         return out
 
-    # locate 结束/失败时,把最终蓝圈(观测)+红圈(重投影)标注图与结果文本发到 debug 话题
     def _emit_final(self, out: dict) -> None:
+        """locate 结束/失败时,把最终蓝圈(观测)+红圈(重投影)标注图与结果文本发到 debug 话题。"""
         if self.on_round is None:
             return
         try:
@@ -175,12 +186,13 @@ class VlmLocator:
         except Exception:
             pass
 
-    # 结束条件:多视图一致(误差低于阈值)且至少经历过一轮像素微调,防止 grid 粗定位结果直接判 done
     def _ready(self) -> bool:
+        """结束条件:多视图一致(误差低于阈值)且至少经历过一轮像素微调,防止 grid 粗定位直接判 done。"""
         return bool(self.converged and self.iterations >= 2)
 
     # ---------- 第1轮:网格定位 ----------
     def _grid_round(self) -> None:
+        """第1轮:叠加网格图,让 VLM 给出各相机网格单元并转为像素点后三角化。"""
         grid_imgs = {c: draw_grid(self.images[c], self.grid_size) for c in self.cams}
         prompt = (
             f"你要帮助把物体定位到 3D 世界坐标。目标物体是\"{self.object}\"。\n"
@@ -205,8 +217,11 @@ class VlmLocator:
         self._settle(points)
 
     # ---------- 第2轮起:以蓝色圈为基准的偏移量微调 ----------
-    # 发图时只给 VLM 看蓝色圈(它自己的像素点);系统重投影(红色圈)只出现在调试图里
     def _refine_round(self) -> None:
+        """第2轮起:让 VLM 给出把蓝圈移向物体中心的像素偏移,累加后重新三角化。
+
+        发给 VLM 的图只画蓝圈(它自己的像素点);系统重投影(红色圈)只出现在调试图里。
+        """
         vlm_imgs = {
             c: self._annotate(self.images[c], self.observed.get(c), None)
             for c in self.cams
@@ -283,9 +298,11 @@ class VlmLocator:
         )
         self._settle(new_points)
 
-    # 无效轮不再退回网格:保留上一轮正常定位状态(蓝点/红圈/position 均未动)重发一轮 refine。
-    # 返回 False 表示重试预算耗尽;已达结束条件则采纳上一轮结果,否则整次定位判失败。
     def _retry_refine_or_adopt(self, reason: str) -> bool:
+        """无效轮不退回网格:保留上一轮正常状态重发一轮 refine。
+
+        返回 False 表示重试预算耗尽;此时若已达结束条件则采纳上一轮结果,否则整次定位判失败。
+        """
         self.restarts += 1
         if self.restarts > self.max_restarts:
             if self._ready():
@@ -303,10 +320,12 @@ class VlmLocator:
         )
         return True
 
-    # DLT 三角化 + 重投影误差检查 + 记录原始点(蓝)与反投影点(红)。
-    # 误差超阈值不回退、照常采纳并继续迭代,converged 只标记本轮是否达标;
-    # 仅非有限值(点可能在相机后方)才回退上一轮状态重试。
     def _settle(self, points: dict[str, tuple[float, float]]) -> None:
+        """DLT 三角化 + 重投影误差检查,并记录原始点(蓝)与反投影点(红)。
+
+        误差超阈值不回退、照常采纳并继续迭代,converged 只标记本轮是否达标;
+        仅非有限值(点可能在相机后方)才回退上一轮状态重试。
+        """
         pts = [points[c] for c in self.cams]
         projs = [self.projections[c] for c in self.cams]
         X = triangulate(pts, projs)
@@ -353,9 +372,8 @@ class VlmLocator:
             return
         self._refine_round()
 
-    # 标注图像:蓝色空心圆 = VLM 标注的原始像素点(发给 VLM/调试均可见);
-    # 红色空心圆 = 系统重投影点(仅调试图,不发给 VLM)
     def _annotate(self, img, blue_pixel, red_pixel):
+        """标注图像:蓝色空心圆 = VLM 标注的原始像素点;红色空心圆 = 系统重投影点(仅调试图)。"""
         out = img.copy()
         if blue_pixel is not None:
             out = draw_marker(out, blue_pixel, _BLUE, radius=10.0)
@@ -363,8 +381,6 @@ class VlmLocator:
             out = draw_marker(out, red_pixel, _RED, radius=10.0)
         return out
 
-    # 发一轮 VLM 请求:组装多图内容,记录历史(prompt+reply)并通过 on_round 发布本轮输入/输出。
-    # imgs=发给模型的图(无红圈);debug_imgs(可选)=发布到 debug 话题的图(含红圈)
     def _ask_vlm(
         self,
         prompt: str,
@@ -372,6 +388,10 @@ class VlmLocator:
         round_tag: str,
         debug_imgs: dict[str, object] | None = None,
     ) -> str:
+        """发一轮 VLM 请求:组装多图内容、记录历史,并通过 on_round 发布本轮输入/输出。
+
+        imgs 为发给模型的图(无红圈);debug_imgs(可选)为发布到 debug 话题的图(含红圈)。
+        """
         # 提示词末尾追加各图实际发送尺寸(encode 可能已等比缩小),坐标以发送图为准
         sizes = {c: sent_image_size(*imgs[c].shape[:2]) for c in self.cams}
         size_text = "、".join(f"{c}={w}x{h}" for c, (w, h) in sizes.items())
@@ -432,4 +452,5 @@ class VlmLocator:
         return reply
 
     def _push(self, role: str, content: str) -> None:
+        """向对话历史追加一条记录。"""
         self.history.append({"role": role, "content": content})

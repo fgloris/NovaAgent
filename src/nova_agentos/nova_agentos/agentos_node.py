@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-# AgentOS 主节点:接收指令入队 -> 后台 agent 循环持续处理(上下文跨任务累积)。
-# agent 全部消息(规划文本/工具调用与结果/完成)经全局话题 /nova/agentos/agent_msg 发布。
+"""AgentOS 主节点:接收指令入队 -> 后台 agent 循环持续处理(上下文跨任务累积)。
+
+agent 全部消息(规划文本/工具调用与结果/完成)经全局话题 /nova/agentos/agent_msg 发布。
+"""
 from pathlib import Path
 
 import rclpy
@@ -20,6 +22,8 @@ from nova_agentos.vision_observer import VisionObserver
 
 
 class AgentosNode(Node):
+    """AgentOS 的 ROS 门面:装配记忆/技能/LLM/视觉/工具适配器,并暴露会话与任务服务。"""
+
     def __init__(self) -> None:
         super().__init__("nova_agentos")
         self.declare_parameter("skills_dir", "")
@@ -98,8 +102,8 @@ class AgentosNode(Node):
         self.create_service(EndSession, "/nova/agentos/session/end", self._end_session_cb)
         self.get_logger().info(f"AgentOS 就绪,skill 目录: {skills_dir}")
 
-    # RunTask 非阻塞:入队即返回 task_id,agent 消息经 /nova/agentos/agent_msg 观察
     def _run_task_cb(self, request, response):
+        """RunTask 非阻塞:入队即返回 task_id,agent 消息经 /nova/agentos/agent_msg 观察。"""
         try:
             task = self.sessions.create_task(request.session_id, request.instruction)
         except (FileNotFoundError, ValueError) as exc:
@@ -116,6 +120,7 @@ class AgentosNode(Node):
         return response
 
     def _start_session_cb(self, request, response):
+        """处理 StartSession:创建并激活一个新 session。"""
         try:
             record = self.sessions.start(request.name)
             response.session_id = record.session_id
@@ -127,6 +132,7 @@ class AgentosNode(Node):
         return response
 
     def _resume_session_cb(self, request, response):
+        """处理 ResumeSession:恢复已有 session 为 active。"""
         try:
             record = self.sessions.resume(request.session_id)
             response.success = True
@@ -138,6 +144,7 @@ class AgentosNode(Node):
         return response
 
     def _end_session_cb(self, request, response):
+        """处理 EndSession:结束 session 并保留其文件。"""
         try:
             record = self.sessions.end(request.session_id)
             response.success = True
@@ -148,7 +155,6 @@ class AgentosNode(Node):
             response.message = str(exc)
         return response
 
-    # agent loop 线程回调 -> 发布到全局话题(消息按 task_id 区分)
     def _on_state(
         self,
         task_id: str,
@@ -158,6 +164,7 @@ class AgentosNode(Node):
         done: bool,
         kind: str,
     ) -> None:
+        """agent loop 线程回调:把状态事件发布到全局话题(消息按 task_id 区分)。"""
         msg = TaskState()
         msg.task_id = task_id
         msg.status = status
@@ -169,11 +176,13 @@ class AgentosNode(Node):
             self.get_logger().info(f"任务 {task_id} [{status}]: {message}")
 
     def destroy_node(self) -> bool:
+        """销毁节点前先停止后台 agent 循环线程。"""
         self.loop.stop()
         return super().destroy_node()
 
 
 def main(args=None) -> int:
+    """初始化 ROS 并运行 AgentOS 节点。"""
     rclpy.init(args=args)
     node = AgentosNode()
     try:

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-# executor_manager:订阅各 executor 心跳维护工具注册表(热插拔),
-# 提供 ListTools service 供 agentos 查询,并以 MCPExecute action 统一转发工具调用。
+"""executor_manager:订阅各 executor 心跳维护工具注册表(热插拔),
+
+提供 ListTools service 供 agentos 查询,并以 MCPExecute action 统一转发工具调用。
+"""
 import time
 
 import rclpy
@@ -17,6 +19,8 @@ HEARTBEAT_TOPIC = "/nova/executors/heartbeat"
 
 
 class ExecutorManagerNode(Node):
+    """工具注册中心:按心跳维护工具表,并把 MCPExecute 调用转发给对应 executor。"""
+
     def __init__(self) -> None:
         super().__init__("nova_executor_manager")
         self.declare_parameter("heartbeat_timeout_sec", 5.0)
@@ -46,6 +50,7 @@ class ExecutorManagerNode(Node):
         self.create_timer(1.0, self._expire_check)
 
     def _on_heartbeat(self, hb: ExecutorHeartbeat) -> None:
+        """处理 executor 心跳:注册新工具或刷新已有工具的时间戳与描述。"""
         now = time.time()
         for tool in hb.tools:
             entry = self._registry.get(tool.name)
@@ -58,6 +63,7 @@ class ExecutorManagerNode(Node):
                 entry["last_seen"] = now
 
     def _expire_check(self) -> None:
+        """周期检查心跳超时,移除下线工具及其转发的 ActionClient。"""
         now = time.time()
         for name in [n for n, e in self._registry.items() if now - e["last_seen"] > self._timeout]:
             entry = self._registry.pop(name)
@@ -65,11 +71,13 @@ class ExecutorManagerNode(Node):
             self.get_logger().warn(f"工具 {name} 下线(心跳超时,executor: {entry['executor']})")
 
     def _list_tools_cb(self, request, response):
+        """ListTools 服务:返回当前注册表里的全部工具描述。"""
         del request
         response.tools = [e["desc"] for e in self._registry.values()]
         return response
 
     def _get_client(self, action_server_name: str) -> ActionClient:
+        """按 action server 名获取(或懒创建)转发用 ActionClient。"""
         client = self._action_clients.get(action_server_name)
         if client is None:
             client = ActionClient(self, MCPExecute, action_server_name, callback_group=self._fwd_cg)
@@ -77,6 +85,7 @@ class ExecutorManagerNode(Node):
         return client
 
     def _execute_cb(self, goal_handle):
+        """把工具调用 goal 转发给对应 executor,透传反馈并处理取消/超时。"""
         goal = goal_handle.request
         entry = self._registry.get(goal.tool_name)
         result = MCPExecute.Result()
@@ -147,6 +156,7 @@ class ExecutorManagerNode(Node):
         return result
 
     def _make_feedback_forward(self, goal_handle):
+        """构造把 executor 反馈转发给原始调用方的回调。"""
         def forward(feedback_msg):
             fb = MCPExecute.Feedback()
             fb.status = feedback_msg.feedback.status
@@ -157,6 +167,7 @@ class ExecutorManagerNode(Node):
 
 
 def main(args=None) -> int:
+    """用多线程 executor 运行工具管理器节点。"""
     rclpy.init(args=args)
     node = ExecutorManagerNode()
     try:

@@ -1,4 +1,4 @@
-"""ROS action backend for forwarding generic EEF trajectories to a robot bridge."""
+"""ROS action 后端:把通用 EEF 轨迹转发给机器人 bridge 执行。"""
 
 from __future__ import annotations
 
@@ -19,6 +19,11 @@ from .trajectory import Pose
 
 
 class RosEEFBackend:
+    """通过 EEFExecute action 与 /{robot}/eef_pose、/joint_states 话题操作机器人。
+
+    缓存最新 EEF 位姿与关节状态,供相对轨迹合成与校验使用。
+    """
+
     def __init__(
         self,
         node,
@@ -41,6 +46,7 @@ class RosEEFBackend:
         )
 
     def _pose_callback(self, msg: PoseStamped) -> None:
+        """缓存最新 EEF 位姿(位置 + XYZW 四元数)。"""
         with self._lock:
             self._pose = Pose(
                 [msg.pose.position.x, msg.pose.position.y, msg.pose.position.z],
@@ -53,6 +59,7 @@ class RosEEFBackend:
             )
 
     def _joint_callback(self, msg: JointState) -> None:
+        """缓存最新关节状态(名称/位置/速度)。"""
         with self._lock:
             self._joints = {
                 "name": list(msg.name),
@@ -61,6 +68,7 @@ class RosEEFBackend:
             }
 
     def describe(self) -> dict:
+        """返回机器人能力描述(基座坐标系、速度上限、工作空间等)。"""
         return {
             "robot_id": self.robot_id,
             "robot_base": f"{self.robot_id}_base",
@@ -71,6 +79,7 @@ class RosEEFBackend:
         }
 
     def get_current_pose(self, robot_id: str) -> Pose:
+        """读取缓存中的当前 EEF 位姿;无缓存或后端未就绪时抛异常。"""
         if robot_id != self.robot_id:
             raise ValueError(f"unknown_robot:{robot_id}")
         with self._lock:
@@ -82,11 +91,13 @@ class RosEEFBackend:
         return Pose(list(pose.position), list(pose.orientation), pose.gripper)
 
     def transform_pose(self, pose: Pose, source: str, target: str) -> Pose:
+        """坐标系转换占位实现:当前仅支持同一坐标系,否则抛 frame_unavailable。"""
         if source != target:
             raise ValueError(f"frame_unavailable:{source}")
         return pose
 
     def validate_trajectory(self, trajectory: list[Pose], constraints: dict) -> str | None:
+        """轨迹预校验:后端不可用时返回错误码,否则返回 None。"""
         del trajectory, constraints
         if not self.client.server_is_ready():
             return "backend_unavailable"
@@ -94,6 +105,7 @@ class RosEEFBackend:
 
     @staticmethod
     def _wait(future, timeout: float | None, cancel_callback: Callable[[], bool] | None = None):
+        """轮询等待 future 完成;超时或被取消返回 None,否则返回结果。"""
         deadline = None if timeout is None else time.monotonic() + timeout
         while not future.done():
             if cancel_callback and cancel_callback():
@@ -110,6 +122,7 @@ class RosEEFBackend:
         cancel_callback: Callable[[], bool],
         constraints: dict | None = None,
     ) -> dict:
+        """把轨迹打包成 EEFExecute goal 发送并等待结果,支持取消与反馈回调。"""
         if not self.client.wait_for_server(timeout_sec=0.1):
             return {"success": False, "error": "backend_unavailable"}
         constraints = constraints or {}

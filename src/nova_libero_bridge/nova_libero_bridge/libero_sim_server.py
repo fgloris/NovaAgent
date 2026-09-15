@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""LIBERO 仿真 server:独立进程托管 benchmark 环境,经 JSON 帧协议对外提供 reset/step。"""
 from __future__ import annotations
 import argparse
 import os
@@ -12,8 +13,8 @@ os.environ.setdefault("NUMBA_CACHE_DIR", "/tmp/numba_cache")
 
 
 
-# 直接 python 运行时(未 source install/setup.bash)也能找到 nova_common 包
 def _ensure_nova_common_importable() -> None:
+    """把 nova_common 所在目录加入 sys.path,使直接 python 运行时也能 import。"""
     here = Path(__file__).resolve()
     candidates = []
     src_parent = here.parents[2]
@@ -34,9 +35,12 @@ from nova_common.jsonline import serve
 from nova_common.obs_codec import build_obs_spec, normalize_obs
 
 
-# LIBERO 源码以 namespace 包形式安装(libero/libero),需要把 LIBERO 根目录加入 sys.path。
-# 优先用 LIBERO_ROOT 环境变量,否则从 ~/.libero/config.yaml 的 benchmark_root 向上推断。
 def _find_libero_root() -> str | None:
+    """定位 LIBERO namespace 包根目录。
+
+    LIBERO 源码以 namespace 包形式安装(libero/libero),需要把根目录加入 sys.path。
+    优先用 LIBERO_ROOT 环境变量,否则从 ~/.libero/config.yaml 的 benchmark_root 向上推断。
+    """
     env_root = os.environ.get("LIBERO_ROOT")
     if env_root:
         return env_root
@@ -54,6 +58,7 @@ def _find_libero_root() -> str | None:
 
 
 def _ensure_libero_importable() -> None:
+    """把 LIBERO 根目录加入 sys.path(找到才加)。"""
     root = _find_libero_root()
     if root:
         sys.path.insert(0, root)
@@ -71,6 +76,7 @@ _CONTROLLER_ACTION_MEANING = {
 
 
 def _build_action_spec(controller: str, dim_override: int | None) -> dict[str, Any]:
+    """按控制器类型生成动作维度与各维含义,兼容维度覆盖与未知控制器。"""
     meaning = list(_CONTROLLER_ACTION_MEANING.get(controller, []))
     dim = dim_override if dim_override is not None else (len(meaning) or 7)
     if not meaning:
@@ -84,6 +90,8 @@ def _build_action_spec(controller: str, dim_override: int | None) -> dict[str, A
 
 
 class LiberoSession:
+    """托管一个 LIBERO benchmark 任务环境,处理 reset/step 请求。"""
+
     def __init__(self, scene_config: dict[str, Any] | None = None) -> None:
         self.scene_config = scene_config or {}
         self.env = None
@@ -98,6 +106,7 @@ class LiberoSession:
             raise ValueError(f"init_mode must be 'random' or 'fixed', got {self.init_mode!r}")
 
     def reset(self, request: dict[str, Any]) -> dict[str, Any]:
+        """按 init_mode 重置环境(random 随机采样 / fixed 加载固定初始状态),返回 obs 等。"""
         self._ensure_env(request)
         assert self.env is not None
 
@@ -132,6 +141,7 @@ class LiberoSession:
         }
 
     def step(self, request: dict[str, Any]) -> dict[str, Any]:
+        """用请求中的动作步进一次环境(旧 gym API),返回 obs/reward/terminated 等。"""
         if self.env is None:
             raise RuntimeError("environment is not initialized; call reset first")
         action = np.asarray(request["action"], dtype=np.float32)
@@ -155,6 +165,7 @@ class LiberoSession:
         }
 
     def close(self) -> None:
+        """关闭底层环境并清空 benchmark/task 缓存。"""
         if self.env is not None:
             self.env.close()
             self.env = None
@@ -163,6 +174,7 @@ class LiberoSession:
             self.env_config = None
 
     def _ensure_env(self, request: dict[str, Any]) -> None:
+        """按请求与 scene 配置创建 LIBERO 环境;配置未变则复用现有环境。"""
         scene = self.scene_config
         config = {
             "benchmark": scene.get("benchmark", request.get("benchmark", "libero_spatial")),
@@ -217,6 +229,7 @@ class LiberoSession:
         )
 
     def _action_spec(self) -> dict[str, Any]:
+        """返回动作维度与含义(维度优先从 action_space 自省,回退到控制器默认)。"""
         dim = None
         if self.env is not None:
             try:
@@ -227,6 +240,7 @@ class LiberoSession:
         return _build_action_spec(controller, dim)
 
     def _sim_info(self) -> dict[str, Any]:
+        """返回仿真元信息:sim 名、机器人、控制器、benchmark 与 task_id。"""
         config = self.env_config or {}
         return {
             "sim": "libero",
@@ -238,6 +252,7 @@ class LiberoSession:
 
 
 def _load_scene_config(path: str | None) -> dict[str, Any]:
+    """读取 scene.yaml,兼容 libero_bridge.ros__parameters 段或顶层 dict。"""
     if not path:
         return {}
     import yaml
@@ -249,6 +264,7 @@ def _load_scene_config(path: str | None) -> dict[str, Any]:
 
 
 def _default_scene_config() -> str | None:
+    """按相对位置定位 config/scene.yaml,无 --scene-config 时兜底。"""
     here = Path(__file__).resolve()
     candidates = [here.parent.parent / "config" / "scene.yaml"]
     for parent in here.parents:
@@ -267,6 +283,7 @@ def _default_scene_config() -> str | None:
 
 
 def main() -> int:
+    """命令行入口:加载 scene 配置并启动 JSON 帧服务。"""
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8766)

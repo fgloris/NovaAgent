@@ -1,6 +1,8 @@
-# MCP 适配器:与 executor_manager 通信。
-#   fetch_tools(): 查询工具注册表 -> 转成 LLM function/tool schema
-#   execute(): 对 manager 的 MCPExecute action 发 goal 并等待结果
+"""MCP 适配器:与 executor_manager 通信。
+
+  fetch_tools(): 查询工具注册表 -> 转成 LLM function/tool schema
+  execute(): 对 manager 的 MCPExecute action 发 goal 并等待结果
+"""
 import json
 import time
 
@@ -15,6 +17,7 @@ from nova_interfaces.srv import ListTools
 
 
 def to_llm_tools(descriptors: list) -> list[dict]:
+    """把 ToolDescriptor 列表转成 OpenAI 风格的 function/tool schema。"""
     tools = []
     for d in descriptors:
         try:
@@ -31,6 +34,8 @@ def to_llm_tools(descriptors: list) -> list[dict]:
 
 
 class McpAdapter:
+    """封装工具列表查询与工具执行两个 ROS 接口。"""
+
     def __init__(self, node: Node, list_tools_srv: str, execute_action: str) -> None:
         # 独立 callback group:回调内同步等待响应时不会被默认组占用而卡死
         cg = MutuallyExclusiveCallbackGroup()
@@ -38,6 +43,7 @@ class McpAdapter:
         self._client = ActionClient(node, MCPExecute, execute_action, callback_group=cg)
 
     def fetch_tools(self, timeout_sec: float = 10.0) -> list:
+        """同步调用 ListTools 服务,返回当前可用工具描述列表。"""
         if not self._list.wait_for_service(timeout_sec=timeout_sec):
             raise RuntimeError(f"executor_manager 服务 {self._list.srv_name} 不可用")
         future = self._list.call_async(ListTools.Request())
@@ -53,6 +59,7 @@ class McpAdapter:
         timeout_sec: float = 120.0,
         feedback_callback=None,
     ) -> dict:
+        """向 executor_manager 发送 MCPExecute goal 并等待结果,返回解析后的 result_json。"""
         if not self._client.wait_for_server(timeout_sec=10.0):
             raise RuntimeError(f"executor_manager action {self._client.action_name} 不可用")
         goal = MCPExecute.Goal()
@@ -82,9 +89,13 @@ class McpAdapter:
             raise RuntimeError(f"工具 {tool_name} 执行失败: {result.error}")
         return json.loads(result.result_json) if result.result_json else {}
 
-    # 轮询等待 future:agent loop 在后台线程,节点由主线程 spin,不能用 spin_until_future_complete
     @staticmethod
     def _wait_future(future, timeout_sec: float) -> bool:
+        """轮询等待 future 完成。
+
+        agent loop 在后台线程、节点由主线程 spin,故不能用 spin_until_future_complete。
+        返回 True 表示已完成,False 表示超时。
+        """
         deadline = time.time() + timeout_sec
         while rclpy.ok() and not future.done():
             if time.time() > deadline:

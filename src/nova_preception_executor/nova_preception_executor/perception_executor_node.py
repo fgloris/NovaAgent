@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-# nova_preception_executor:感知类 MCP executor。
-#   常驻订阅 /nova/env/camera/* 滚动缓存最新帧;工具调用时查 /nova/env/info 取相机投影矩阵,
-#   用 VLM 多视图网格/像素定位获得物体 3D 世界坐标(工具名 locate_object_3d)。
+"""nova_preception_executor:感知类 MCP executor。
+
+  常驻订阅 /nova/env/camera/* 滚动缓存最新帧;工具调用时查 /nova/env/info 取相机投影矩阵,
+  用 VLM 多视图网格/像素定位获得物体 3D 世界坐标(工具名 locate_object_3d)。
+"""
 import json
 import time
 
@@ -47,10 +49,13 @@ TOOL_SCHEMA = {
 
 
 def _image_to_numpy(msg: Image) -> np.ndarray:
+    """把 ROS Image(rgb8)消息转成 HxWx3 的 uint8 numpy 数组。"""
     return np.frombuffer(msg.data, dtype=np.uint8).reshape((msg.height, msg.width, 3))
 
 
 class PerceptionExecutorNode(Node):
+    """提供 locate_object_3d 工具:多视图 VLM 定位物体并返回 3D 世界坐标。"""
+
     def __init__(self) -> None:
         super().__init__("nova_preception_executor")
         self.declare_parameter("camera_names", DEFAULT_CAMERAS)
@@ -135,6 +140,7 @@ class PerceptionExecutorNode(Node):
         )
 
     def _publish_heartbeat(self) -> None:
+        """周期性发布心跳,向 agent 声明本 executor 提供的 locate_object_3d 工具。"""
         hb = ExecutorHeartbeat()
         hb.executor_name = self.get_name()
         tool = ToolDescriptor()
@@ -152,12 +158,14 @@ class PerceptionExecutorNode(Node):
         self._heartbeat_pub.publish(hb)
 
     def _make_cam_cb(self, cam: str):
+        """为指定相机生成订阅回调,滚动缓存最新一帧。"""
         def cb(msg):
             self._frames[cam] = _image_to_numpy(msg)
 
         return cb
 
     def _fetch_projections(self) -> dict:
+        """同步调用 /nova/env/info,取出各相机的投影矩阵字典。"""
         if not self._info_client.service_is_ready():
             if not self._info_client.wait_for_service(timeout_sec=5.0):
                 raise RuntimeError(f"env info service {self.env_info_srv} 不可用")
@@ -173,9 +181,9 @@ class PerceptionExecutorNode(Node):
         info = json.loads(response.spec_json)
         return info.get("cameras", {})
 
-    # 请求相机名 -> 投影矩阵键:先精确匹配,再按包含关系兜底
     @staticmethod
     def _match_projection(cam: str, projections: dict) -> str | None:
+        """把请求的相机名映射到投影矩阵的键:先精确匹配,再按包含关系兜底。"""
         if cam in projections:
             return cam
         for key in projections:
@@ -184,6 +192,7 @@ class PerceptionExecutorNode(Node):
         return None
 
     def _execute_cb(self, goal_handle):
+        """Action 回调:解析参数执行定位,成功 succeed、异常 abort。"""
         goal = goal_handle.request
         try:
             params = json.loads(goal.params_json) if goal.params_json else {}
@@ -205,6 +214,7 @@ class PerceptionExecutorNode(Node):
             return result
 
     def _locate(self, params: dict, task_id: str = "") -> dict:
+        """收集相机帧与投影矩阵,调用 VlmLocator 完成多视图 3D 定位。"""
         object_desc = str(params.get("object", "")).strip()
         if not object_desc:
             return {"ok": False, "error": "缺少 object 参数"}
@@ -248,8 +258,8 @@ class PerceptionExecutorNode(Node):
             on_images=self._publish_vlm_images,
         )
 
-    # debug 话题是否该发:on 恒发;sub 有订阅者才发;off 时 publisher 未创建
     def _want_debug_pub(self, pub) -> bool:
+        """debug 话题是否该发:on 恒发;sub 有订阅者才发;off 时 publisher 未创建。"""
         if pub is None:
             return False
         if self._debug_mode == "on":
@@ -258,8 +268,8 @@ class PerceptionExecutorNode(Node):
             return pub.get_subscription_count() > 0
         return False
 
-    # VlmLocator 每轮回调:绘制图按相机发到各自话题,回合文本发到 vlm_round
     def _publish_vlm_round(self, payload: dict) -> None:
+        """VlmLocator 每轮回调:绘制图按相机发到各自话题,回合文本发到 vlm_round。"""
         task_id = str(payload.get("task_id", ""))
         round_tag = str(payload.get("round", ""))
         if self._debug_mode != "off":
@@ -278,8 +288,8 @@ class PerceptionExecutorNode(Node):
         except Exception as exc:
             self.get_logger().warn(f"发布 vlm_round 失败: {exc}")
 
-    # 只把标注图发到各相机 debug 话题(不写 vlm_round/日志),用于"发给模型前"推送
     def _publish_vlm_images(self, payload: dict) -> None:
+        """只把标注图发到各相机 debug 话题(不写 vlm_round/日志),用于"发给模型前"推送。"""
         task_id = str(payload.get("task_id", ""))
         round_tag = str(payload.get("round", ""))
         for cam, url in (payload.get("images") or {}).items():
@@ -294,6 +304,7 @@ class PerceptionExecutorNode(Node):
 
     @staticmethod
     def _data_url_to_image_msg(data_url: str, frame_id: str) -> Image:
+        """把 data:image/jpeg;base64 URL 解码并转成 ROS Image 消息。"""
         import base64
         import io
 
@@ -318,6 +329,7 @@ class PerceptionExecutorNode(Node):
 
 
 def main(args=None) -> int:
+    """启动多线程 executor 并运行感知节点。"""
     rclpy.init(args=args)
     node = PerceptionExecutorNode()
     executor = MultiThreadedExecutor()

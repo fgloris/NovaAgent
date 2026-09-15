@@ -1,11 +1,19 @@
+"""从 MJCF 片段与 YAML 配置装配机器人描述对象。"""
 from pathlib import Path
 import hashlib, json, xml.etree.ElementTree as ET
 import yaml
 from .model import RobotDescription
 
-def _root(): return Path(__file__).resolve().parents[1]
+def _root():
+    """返回包根目录(用于定位 descriptions/ 与 config/)。"""
+    return Path(__file__).resolve().parents[1]
 
 def load_robot_description(name="panda_omron", config_path=None):
+    """加载指定机器人的描述:解析 MJCF 关节/连杆、合并 YAML 配置并计算文件哈希。
+
+    依次读取 manifest.yaml 与各 XML 片段,汇总关节(含类型/轴/限位)与连杆,
+    最后把所有描述文件的 sha256 汇总成一个版本指纹写入 source。
+    """
     base = _root() / "descriptions" / name
     if not base.exists():
         base = Path(__file__).resolve().parent.parent / "share" / "descriptions" / name

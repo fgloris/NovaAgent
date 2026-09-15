@@ -1,6 +1,8 @@
-# 统一环境桥节点基类。
-# 订阅 /nova/env/action_cmd,发布 /nova/env/obs 与 /nova/env/camera/*/image_raw,
-# 提供 /nova/env/info service 做自发现。子类只填 sim 特定细节。
+"""统一环境桥节点基类。
+
+订阅 /nova/env/action_cmd,发布 /nova/env/obs 与 /nova/env/camera/*/image_raw,
+提供 /nova/env/info service 做自发现。子类只填 sim 特定细节。
+"""
 import json
 import os
 import traceback
@@ -84,32 +86,36 @@ class EnvBridgeBase(Node):
         raise NotImplementedError
 
     def _build_reset_request(self) -> dict[str, Any]:
+        """构造发送给 sim server 的 reset 请求(子类实现)。"""
         raise NotImplementedError
 
     def action_vector_to_native(self, values: np.ndarray):
-        # 规范动作向量 -> 发送给 sim server 的 request["action"];返回 None 表示丢弃
+        """把规范动作向量转成 sim server 的 request["action"];返回 None 表示丢弃。"""
         raise NotImplementedError
 
     # ---------- 可覆写 ----------
     def _extra_info(self) -> dict[str, Any]:
+        """返回写入 /nova/env/info 的额外信息。"""
         return dict(self.sim_info)
 
     def _observation_info(self) -> dict[str, Any]:
-        """Return lightweight, per-frame metadata for ``/nova/env/obs``."""
+        """返回 /nova/env/obs 每帧附带的轻量元数据。"""
         return dict(self.sim_info)
 
     # ---------- 公共逻辑 ----------
     def _zero_action(self):
+        """构造与动作维度一致的零动作(已转成 native 格式)。"""
         return self.action_vector_to_native(np.zeros(self.action_spec["dim"], dtype=np.float32))
 
     def _absorb_response(self, response: dict[str, Any]) -> None:
-        # 帧协议已把 obs/info 里的 numpy 数组还原为 ndarray,直接用
+        """吸收一次响应:帧协议已把 obs/info 里的 numpy 数组还原为 ndarray,可直接使用。"""
         self.obs = response["obs"]
         self.action_spec = response.get("action_spec") or self.action_spec
         self.obs_spec = response.get("obs_spec") or self.obs_spec
         self.sim_info = response.get("sim_info") or self.sim_info
 
     def _reset_env(self) -> None:
+        """向 sim server 请求 reset,吸收响应并重建相机发布者后发布一次观测。"""
         response = self.client.request(self._build_reset_request())
         self._absorb_response(response)
         self.latest_action = self._zero_action()
@@ -119,6 +125,7 @@ class EnvBridgeBase(Node):
         self.get_logger().info(f"env reset ({json.dumps(self._extra_info(), ensure_ascii=False)})")
 
     def _step_once(self) -> None:
+        """用当前动作步进一次并发布观测;消费即归零,避免上一动作被持续复用。"""
         if self.latest_action is None:
             self.latest_action = self._zero_action()
         response = self.client.request({"type": "step", "action": self.latest_action})
@@ -131,6 +138,7 @@ class EnvBridgeBase(Node):
         self._publish_observation()
 
     def action_callback(self, msg: Float32MultiArray) -> None:
+        """接收 /nova/env/action_cmd,校验维度并转成 native 动作暂存。"""
         try:
             values = np.asarray(msg.data, dtype=np.float32)
             dim = int(self.action_spec["dim"])
@@ -144,6 +152,7 @@ class EnvBridgeBase(Node):
             self.get_logger().error(f"Invalid action_cmd: {exc}")
 
     def info_callback(self, request, response):
+        """处理 /nova/env/info:返回 action_spec/obs_spec/instruction 等自发现信息。"""
         del request
         try:
             payload = dict(self._extra_info())
@@ -160,6 +169,7 @@ class EnvBridgeBase(Node):
         return response
 
     def reset_callback(self, request, response):
+        """处理 /nova/env/reset:触发一次环境重置。"""
         del request
         try:
             self._reset_env()
@@ -171,6 +181,7 @@ class EnvBridgeBase(Node):
         return response
 
     def step_zero_callback(self, request, response):
+        """处理 /nova/env/step_zero:以零动作步进一次。"""
         del request
         try:
             self.latest_action = self._zero_action()
@@ -183,6 +194,7 @@ class EnvBridgeBase(Node):
         return response
 
     def timer_callback(self) -> None:
+        """定时步进回调:按 publish_rate_hz 推进环境并发布观测。"""
         try:
             if self.zero_action_on_start and self.step_count == 0:
                 self.latest_action = self._zero_action()
@@ -191,6 +203,7 @@ class EnvBridgeBase(Node):
             self.get_logger().error(traceback.format_exc())
 
     def _ensure_camera_publishers(self, cameras: dict[str, Any]) -> None:
+        """为每个相机懒创建 image_raw 与 compressed 两个发布者。"""
         for name in cameras:
             if name in self.camera_publishers:
                 continue
@@ -201,6 +214,7 @@ class EnvBridgeBase(Node):
             self.get_logger().info(f"Camera publisher: {topic} / {comp_topic}")
 
     def _publish_observation(self) -> None:
+        """把当前 obs 发布到 /nova/env/obs,并把各相机图像发布到对应话题。"""
         if self.obs is None:
             return
 
@@ -243,6 +257,7 @@ class EnvBridgeBase(Node):
                 comp_pub.publish(comp_msg)
 
     def _numpy_rgb_to_image_msg(self, image: np.ndarray) -> Image:
+        """把 RGB numpy 图像转成 ROS Image 消息(rgb8,行步长=宽*3)。"""
         if image.dtype != np.uint8:
             image = np.clip(image, 0, 255).astype(np.uint8)
         image = np.ascontiguousarray(image)
@@ -256,6 +271,7 @@ class EnvBridgeBase(Node):
         return msg
 
     def _numpy_rgb_to_jpeg(self, image: np.ndarray) -> bytes:
+        """把 RGB numpy 图像编码为 JPEG 字节(质量 80)。"""
         if image.dtype != np.uint8:
             image = np.clip(image, 0, 255).astype(np.uint8)
         import io
@@ -267,6 +283,7 @@ class EnvBridgeBase(Node):
         return buf.getvalue()
 
     def destroy_node(self) -> bool:
+        """销毁节点前先关闭到 sim server 的连接。"""
         if self.client is not None:
             self.client.close()
         return super().destroy_node()

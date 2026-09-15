@@ -55,10 +55,10 @@ RoboCasa sim server listening on 127.0.0.1:8766
 ```
 [pi0] loaded checkpoint: /home/ubuntu/data1/lxy/robocasa/robocasa365_checkpoints/pi0/pi0_robocasa_pretrain_human300/multitask_learning/75000 (model=pi0_robocasa_pretrain_human300)
 [pi0] serving on ws://0.0.0.0:8767/predict
-INFO:     Started server process [1549580]
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:8767 (Press CTRL+C to quit)
+INFO:Started server process [1549580]
+INFO:Waiting for application startup.
+INFO:Application startup complete.
+INFO:Uvicorn running on http://0.0.0.0:8767 (Press CTRL+C to quit)
 ```
 即可。
 
@@ -132,13 +132,13 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
 
 # 9.14
 长期记忆 Long-Term Memory，需要持久化成文件。
-  ├── 用户记忆       用户偏好、习惯、约束
-  ├── 场景记忆       物体、位置、空间关系、环境状态
+  ├── 用户记忆  用户偏好、习惯、约束
+  ├── 场景记忆  物体、位置、空间关系、环境状态
   └── 经验和技能记忆（模型检索读取）  哪种任务应该如何执行，哪些方法在什么条件下成功/失败。目前的存法是放在skills里面，经验相关还没加。
 
 短期记忆 Context Memory，持久化成临时文件。
-  ├── 会话记忆       会话开始以来所有与用户对话、执行任务的记忆，当用户结束会话时生成一个会话ID并存成临时文件，以供用户恢复。
-  └── 任务记忆       当前用户发出的单个任务内的记忆
+  ├── 会话记忆  会话开始以来所有与用户对话、执行任务的记忆，当用户结束会话时生成一个会话ID并存成临时文件，以供用户恢复。
+  └── 任务记忆  当前用户发出的单个任务内的记忆
 
 短期记忆怎么维护？
 1. 每当一个新task入队，开启一个新任务记忆。该记忆过程中，所有的thinking和tool use反馈等应当保留。tool call内部记忆省略。
@@ -148,34 +148,34 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
 
 ```
   CLI / ROS client
-        |
-        | StartSession / ResumeSession
-        v
+   |
+   | StartSession / ResumeSession
+   v
   session_id
-        |
-        | RunTask(session_id, instruction)
-        v
+   |
+   | RunTask(session_id, instruction)
+   v
   AgentosNode
-        |
-        | 创建 TaskMemory
-        | 放入全局 FIFO 队列
-        v
+   |
+   | 创建 TaskMemory
+   | 放入全局 FIFO 队列
+   v
   AgentLoop
-        |
-        | 一次取出一个 task
-        v
+   |
+   | 一次取出一个 task
+   v
   TaskRunner
-        |
-        | 构造上下文
-        | 调用 VLM
-        | 执行工具
-        | 接收反馈
-        | 回填结果
-        | 再次调用 VLM
-        v
+   |
+   | 构造上下文
+   | 调用 VLM
+   | 执行工具
+   | 接收反馈
+   | 回填结果
+   | 再次调用 VLM
+   v
   finish / error / max steps
-        |
-        v
+   |
+   v
   任务落盘 + TaskState 发布
 ```
 

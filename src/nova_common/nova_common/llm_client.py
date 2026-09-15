@@ -1,5 +1,7 @@
-# 统一 LLM 客户端:内部使用 OpenAI 兼容消息格式(含 function/tool calling)。
-# 按 providers 顺序尝试调用,失败自动回退下一个 provider。
+"""统一 LLM 客户端:内部使用 OpenAI 兼容消息格式(含 function/tool calling)。
+
+按 providers 顺序尝试调用,失败自动回退下一个 provider。
+"""
 import json
 import os
 import time
@@ -17,6 +19,8 @@ DEFAULT_MAX_TOKENS = 8192
 
 @dataclass
 class ChatResult:
+    """一次对话返回结果:正文、工具调用、思考内容与原始响应。"""
+
     content: str = ""
     tool_calls: list = field(default_factory=list)
     reasoning_content: str = ""  # 思考模式(如 deepseek-v4-pro)必须原样带回,否则 400
@@ -24,7 +28,7 @@ class ChatResult:
 
 
 class LLMError(RuntimeError):
-    pass
+    """LLM 调用或配置相关错误。"""
 
 
 class LLMClient:
@@ -47,6 +51,7 @@ class LLMClient:
         task_id: str = "",
         session_id: str = "",
     ) -> ChatResult:
+        """按序尝试各 provider,任一成功即返回;全部失败抛 LLMError。"""
         errors = []
         for fallback_no, provider in enumerate(self.providers):
             try:
@@ -59,6 +64,7 @@ class LLMClient:
         raise LLMError("所有 LLM provider 均失败: " + " | ".join(errors))
 
     def _chat_one(self, provider, messages, tools, temperature, max_tokens, task_id="", session_id="", fallback_no=0) -> ChatResult:
+        """调用单个 provider:生成请求元数据后,按 kind 分派到 OpenAI/Anthropic 实现。"""
         request_id = f"req_{os.urandom(8).hex()}"
         metadata = {
             "request_id": request_id,
@@ -73,8 +79,8 @@ class LLMClient:
             return self._chat_anthropic(provider, messages, tools, temperature, max_tokens, metadata)
         return self._chat_openai(provider, messages, tools, temperature, max_tokens, metadata)
 
-    # 逐个 provider 发一条最小 chat,测连接延迟;返回 [{name, ok, latency_ms} 或 {name, ok, error}]
     def ping(self, max_tokens: int = 8) -> list[dict]:
+        """逐个 provider 发一条最小 chat 测连接延迟;返回 [{name, ok, latency_ms} 或 {name, ok, error}]。"""
         results = []
         for provider in self.providers:
             t0 = time.time()
@@ -92,6 +98,7 @@ class LLMClient:
         return results
 
     def _chat_openai(self, provider, messages, tools, temperature, max_tokens, metadata=None) -> ChatResult:
+        """调用 OpenAI 兼容的 /chat/completions 接口,并把请求/响应写入 api_logger。"""
         url = provider["base_url"].rstrip("/") + "/chat/completions"
         body = {
             "model": provider["model"],
@@ -107,8 +114,7 @@ class LLMClient:
         if self.api_logger:
             self.api_logger.request(request_id, metadata or {}, messages, tools, body)
         try:
-            # Resolve credentials inside the logged request lifecycle so even
-            # configuration failures produce a paired response event.
+            # 在已记录的请求生命周期内解析凭据,这样即便配置出错也能产生配对的响应事件
             api_key = self._api_key(provider)
             resp = requests.post(
                 url,
@@ -139,6 +145,7 @@ class LLMClient:
         )
 
     def _chat_anthropic(self, provider, messages, tools, temperature, max_tokens, metadata=None) -> ChatResult:
+        """调用 Anthropic /v1/messages 接口,并把 OpenAI 风格消息/工具转换为 Anthropic 格式。"""
         url = provider["base_url"].rstrip("/") + "/v1/messages"
         system, an_messages = self._to_anthropic_messages(messages)
         body = {
@@ -200,9 +207,9 @@ class LLMClient:
                 )
         return ChatResult(content, tool_calls, "", data)
 
-    # 把 OpenAI 风格消息转成 Anthropic 格式
     @staticmethod
     def _to_anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
+        """把 OpenAI 风格消息转成 Anthropic 格式,返回 (system 文本, messages 列表)。"""
         system_parts = []
         out = []
         for m in messages:
@@ -237,6 +244,7 @@ class LLMClient:
 
     @staticmethod
     def _to_anthropic_content(content: Any) -> Any:
+        """把 OpenAI 风格的多模态 content 列表转成 Anthropic 的 text/image 块。"""
         if not isinstance(content, list):
             return content
         out = []
@@ -263,6 +271,7 @@ class LLMClient:
 
     @staticmethod
     def _parse_data_url(url: str) -> tuple[str, str]:
+        """拆解 data:image/*;base64 形式的 URL,返回 (media_type, base64 数据)。"""
         prefix = "data:"
         if not url.startswith(prefix) or ";base64," not in url:
             raise LLMError("Anthropic vision 只支持 data:image/*;base64 图像 URL")
@@ -273,10 +282,12 @@ class LLMClient:
 
     @staticmethod
     def _value(value, provider, key, default):
+        """显式传入的参数优先,否则取 provider 配置,最后回退默认值。"""
         return value if value is not None else provider.get(key, default)
 
     @staticmethod
     def _api_key(provider) -> str:
+        """从 api_key_env 指定的环境变量读取 API key,缺失时抛 LLMError。"""
         env = provider.get("api_key_env")
         if env:
             key = os.environ.get(env)

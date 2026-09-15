@@ -1,4 +1,4 @@
-"""File logger for complete provider requests and responses."""
+"""把 provider 的完整请求与响应记录到文件。"""
 from __future__ import annotations
 
 import base64
@@ -14,6 +14,8 @@ from typing import Any
 
 
 class ApiLogger:
+    """按请求 id 把 API 事件写成 JSONL,可选把图像单独落盘并脱敏密钥。"""
+
     def __init__(self, enabled: bool = True, images: bool = True, directory: str | Path | None = None, retention_days: int = 30):
         default = os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))
         self.enabled = bool(enabled)
@@ -24,11 +26,13 @@ class ApiLogger:
         self._lock = threading.Lock()
 
     def _path(self, request_id: str) -> Path:
+        """按日期分目录、时间戳+request_id 命名,返回该请求的日志文件路径。"""
         day = time.strftime("%Y-%m-%d")
         stamp = time.strftime("%Y%m%d-%H%M%S")
         return self.directory / day / f"{stamp}-{request_id}.jsonl"
 
     def log(self, event: dict, request_id: str, messages: list | None = None) -> None:
+        """把一条事件追加写入对应请求的 JSONL 文件,并在末尾触发过期清理。"""
         if not self.enabled:
             return
         with self._lock:
@@ -42,6 +46,7 @@ class ApiLogger:
         self._cleanup()
 
     def _sanitize_messages(self, messages: list, request_id: str) -> list:
+        """逐条脱敏消息:文本里的相机元信息提取为字段,base64 图像转成引用。"""
         output = []
         for message in messages:
             if isinstance(message, dict) and isinstance(message.get("content"), list):
@@ -76,6 +81,7 @@ class ApiLogger:
     def _sanitize_image(
         self, value: dict, request_id: str, camera: str, timestamp: str, shape: str
     ) -> dict:
+        """把 data URL 图像解码后落盘,返回含尺寸/哈希/路径的图像引用。"""
         url = (value.get("image_url") or {}).get("url", "")
         if not (url.startswith("data:") and ";base64," in url):
             return self._sanitize(value, request_id)
@@ -110,6 +116,7 @@ class ApiLogger:
         }
 
     def _sanitize(self, value: Any, request_id: str) -> Any:
+        """递归脱敏:移除鉴权字段、遮蔽 Bearer token、把内联图像替换为引用。"""
         if isinstance(value, list):
             return [self._sanitize(v, request_id) for v in value]
         if isinstance(value, dict):
@@ -132,8 +139,7 @@ class ApiLogger:
         return value
 
     def request(self, request_id: str, metadata: dict, messages: list, tools: list | None, body: dict) -> None:
-        # Store the exact provider payload as text, while extracting image
-        # references once from the original message list.
+        """记录请求事件:保存 provider 原始载荷,并从原始消息中提取图像引用。"""
         event = {
             "type": "request",
             **metadata,
@@ -143,6 +149,7 @@ class ApiLogger:
         self.log(event, request_id, messages)
 
     def response(self, request_id: str, metadata: dict, response: Any = None, error: str = "", http_status: int | None = None) -> None:
+        """记录响应事件:保存脱敏后的响应体、tool_calls 与错误信息。"""
         event = {"type": "response", **metadata, "http_status": http_status, "error": error}
         if response is not None:
             event["response"] = self._sanitize(response, request_id)
@@ -151,6 +158,7 @@ class ApiLogger:
         self.log(event, request_id)
 
     def _cleanup(self) -> None:
+        """删除超过 retention_days 的旧 JSONL 日志文件。"""
         if not self.enabled or not self.retention_days:
             return
         cutoff = time.time() - self.retention_days * 86400

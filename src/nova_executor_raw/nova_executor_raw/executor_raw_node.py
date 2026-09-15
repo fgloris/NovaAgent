@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""原始 EEF 轨迹 executor:提供 move_eef / move_eef_relative 两个 MCP 工具。
+
+校验并插值绝对/相对笛卡尔轨迹,再经 RosEEFBackend 转发给机器人 bridge。
+"""
 import json
 import rclpy
 from rclpy.action import ActionServer, CancelResponse
@@ -64,6 +68,8 @@ TOOLS = {
 
 
 class ExecutorRawNode(Node):
+    """为每个 EEF 工具暴露一个 MCPExecute action server,并周期性上报能力心跳。"""
+
     def __init__(self):
         """创建 MCP action server 并启动能力心跳。"""
         super().__init__("nova_executor_raw")

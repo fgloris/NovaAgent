@@ -1,4 +1,4 @@
-# 感知几何:网格↔像素换算、DLT 三角化、重投影误差、图像标注。纯 numpy,无 ROS 依赖。
+"""感知几何:网格↔像素换算、DLT 三角化、重投影误差、图像标注。纯 numpy,无 ROS 依赖。"""
 import base64
 import io
 import re
@@ -9,13 +9,17 @@ import numpy as np
 # ---------- 投影 ----------
 
 def project_point(P, X):
-    # P: 3x4 世界->像素矩阵;X: 3D 世界坐标。返回 (u, v) 像素坐标。
+    """把 3D 世界坐标 X 用 3x4 投影矩阵 P 投影为像素坐标 (u, v)。"""
     x = P @ np.append(np.asarray(X, dtype=np.float64), 1.0)
     return x[0] / x[2], x[1] / x[2]
 
 
-# DLT 三角化:由多视图像素点 (u_i, v_i) 与投影矩阵 P_i 求 3D 点(最小化代数误差)。
 def triangulate(pts2d, projs):
+    """DLT 三角化:由多视图像素点 (u_i, v_i) 与投影矩阵 P_i 求 3D 点(最小化代数误差)。
+
+    每帧构造两个线性约束 (u*P2-P0, v*P2-P1),拼成 A,对 A 做 SVD,
+    取最小奇异值对应的右奇异向量即为齐次解,再除以 w 得到欧氏坐标。
+    """
     assert len(pts2d) == len(projs) and len(pts2d) >= 2
     rows = []
     for (u, v), P in zip(pts2d, projs):
@@ -28,6 +32,7 @@ def triangulate(pts2d, projs):
 
 
 def reprojection_errors(pts2d, projs, X):
+    """计算 3D 点 X 投影回各视图后与原始像素点的欧氏误差,用于评估三角化精度。"""
     errors = []
     for (u, v), P in zip(pts2d, projs):
         uu, vv = project_point(P, X)
@@ -38,7 +43,7 @@ def reprojection_errors(pts2d, projs, X):
 # ---------- 网格 ----------
 
 def grid_cell_to_pixel(row, col, grid_size, height, width):
-    # 网格行自上而下 1..grid_size,列自左而右 1..grid_size;取该格的像素中心。
+    """把网格行列(1-based,行自上而下、列自左而右)换算为该格中心的像素坐标 (u, v)。"""
     cell_h = height / grid_size
     cell_w = width / grid_size
     u = (col - 0.5) * cell_w
@@ -46,8 +51,8 @@ def grid_cell_to_pixel(row, col, grid_size, height, width):
     return u, v
 
 
-# 解析 VLM 输出的网格单元坐标,兼容 "3-5" / "C4" / "4C" / "row3-col5" / {"row":..,"col":..}。
 def parse_grid_cell(text):
+    """解析 VLM 输出的网格单元坐标,兼容 "3-5" / "C4" / "4C" / "row3-col5" / {"row":..,"col":..}。"""
     if isinstance(text, dict):
         if "row" in text and "col" in text:
             return int(text["row"]), int(text["col"])
@@ -65,8 +70,8 @@ def parse_grid_cell(text):
     return None
 
 
-# 解析 VLM 输出的像素坐标,兼容 "[x, y]" / "(x,y)" / {"x":..,"y":..}。
 def parse_pixel(text):
+    """解析 VLM 输出的像素坐标,兼容 "[x, y]" / "(x,y)" / {"x":..,"y":..}。"""
     if isinstance(text, dict):
         if "x" in text and "y" in text:
             return float(text["x"]), float(text["y"])
@@ -86,7 +91,7 @@ _LABEL_FONT_SCALE = 0.5  # 字号约为格子短边的比例
 
 
 def _load_grid_font(px):
-    # 需要 TrueType 才能真正缩放字号;找不到可用字体时返回 None(退化为默认小字)
+    """按像素高度加载 TrueType 字体(只有它才能缩放字号);找不到可用字体时返回 None(退化为默认小字)。"""
     try:
         from PIL import ImageFont
     except Exception:
@@ -104,6 +109,7 @@ def _load_grid_font(px):
 
 
 def draw_grid(img, grid_size, line_color=(200, 200, 200), label_color=(0, 200, 0)):
+    """在图像上叠加 grid_size×grid_size 网格线,并在每格中心渲染 "行-列" 编号。"""
     out = img.copy()
     h, w = out.shape[:2]
     for i in range(1, grid_size):
@@ -128,7 +134,7 @@ def draw_grid(img, grid_size, line_color=(200, 200, 200), label_color=(0, 200, 0
 
 
 def draw_marker(img, pixel, color, radius=8, label=None):
-    # 画空心圆圈(仅外圈着色),不遮挡圈内物体
+    """在像素位置画空心圆圈标记(仅外圈着色),不遮挡圈内物体;可选在圈上方加标签。"""
     out = img.copy()
     u, v = float(pixel[0]), float(pixel[1])
     if not (np.isfinite(u) and np.isfinite(v)):
@@ -149,6 +155,7 @@ def draw_marker(img, pixel, color, radius=8, label=None):
 
 
 def _put_label(img, text, x, y, color, font=None):
+    """在图像 (x, y) 处居中绘制文本;优先用 PIL,无 PIL 时退化为像素点。"""
     h, w = img.shape[:2]
     try:
         from PIL import Image, ImageDraw
@@ -178,7 +185,7 @@ _ENCODE_MAX_SIZE = 768
 
 
 def sent_image_size(height, width, max_size=_ENCODE_MAX_SIZE):
-    # 等比缩小规则与 encode_image 一致:只缩不放;返回发送给 VLM 的实际 (宽, 高)
+    """按 encode_image 的等比缩小规则(只缩不放)返回实际发送给 VLM 的 (宽, 高)。"""
     scale = min(1.0, max_size / max(height, width))
     if scale < 1.0:
         return int(round(width * scale)), int(round(height * scale))
@@ -186,6 +193,7 @@ def sent_image_size(height, width, max_size=_ENCODE_MAX_SIZE):
 
 
 def encode_image(img, max_size=_ENCODE_MAX_SIZE, quality=80):
+    """把图像等比缩小后编码为 data:image/jpeg;base64, 字符串,供 VLM 接口使用。"""
     if img.dtype != np.uint8:
         img = np.clip(img, 0, 255).astype(np.uint8)
     h, w = img.shape[:2]
@@ -199,5 +207,6 @@ def encode_image(img, max_size=_ENCODE_MAX_SIZE, quality=80):
 
 
 def _resize(img, w, h):
+    """用 PIL 把图像缩放到 (w, h)。"""
     from PIL import Image as PILImage
     return np.asarray(PILImage.fromarray(img, mode="RGB").resize((w, h)))

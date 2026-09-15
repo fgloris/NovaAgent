@@ -3,6 +3,8 @@ from typing import Any
 
 @dataclass
 class RobotDescription:
+    """机器人的结构化描述:连杆/关节、控制器、安全限位与观测/动作映射。"""
+
     robot_type: str
     robot_id: str
     base_frame: str

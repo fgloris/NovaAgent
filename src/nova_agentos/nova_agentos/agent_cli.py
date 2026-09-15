@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-# NovaAgent 终端聊天 CLI:输入指令发给 agent,实时打印 agent 每轮规划/工具调用/结果。
-# 命令:
-#   /reset  重置仿真环境(/nova/env/reset)
-#   /ping   测每个 LLM provider 连接延迟
-#   /env    查询仿真环境规格(相机/state/action 键)
-#   /help   显示命令帮助
-#   /quit   /exit 退出
+"""NovaAgent 终端聊天 CLI:输入指令发给 agent,实时打印 agent 每轮规划/工具调用/结果。
+
+命令:
+  /reset  重置仿真环境(/nova/env/reset)
+  /ping   测每个 LLM provider 连接延迟
+  /env    查询仿真环境规格(相机/state/action 键)
+  /help   显示命令帮助
+  /quit   /exit 退出
+"""
 import sys
 import threading
 import time
@@ -32,6 +34,8 @@ _RESET = "\033[0m"
 
 
 class AgentCliNode(Node):
+    """终端 CLI 的 ROS 客户端:封装 RunTask/会话/环境等服务并订阅 agent 消息。"""
+
     def __init__(self) -> None:
         super().__init__("nova_agentos_cli")
         self.declare_parameter("run_task_service", "/nova/agentos/run")
@@ -64,6 +68,7 @@ class AgentCliNode(Node):
 
     # ---------- 消息接收 ----------
     def _on_msg(self, msg: TaskState) -> None:
+        """按事件类型着色打印 agent 消息,并在完成后重绘输入提示符。"""
         color, label = _KIND_STYLE.get(msg.kind, ("\033[0m", msg.kind))
         if msg.done:
             color = "\033[1;32m" if msg.status == "done" else "\033[1;31m"
@@ -73,6 +78,7 @@ class AgentCliNode(Node):
 
     # ---------- 服务调用(轮询 future,节点由后台线程 spin) ----------
     def _call(self, client, request, timeout_sec: float = 10.0):
+        """同步调用 ROS 服务:等待服务可用后轮询 future,超时抛异常。"""
         if not client.wait_for_service(timeout_sec=timeout_sec):
             raise RuntimeError(f"服务 {client.srv_name} 不可用")
         future = client.call_async(request)
@@ -84,6 +90,7 @@ class AgentCliNode(Node):
         return future.result()
 
     def send_message(self, instruction: str) -> str:
+        """把指令作为新任务提交到当前 session,返回 task_id。"""
         if not self._session_id:
             raise RuntimeError("请先执行 /session start [name] 或 /session resume <session_id>")
         resp = self._call(
@@ -95,6 +102,7 @@ class AgentCliNode(Node):
         return resp.task_id
 
     def session_start(self, name: str = "default") -> str:
+        """创建并激活一个新的 AgentOS session。"""
         resp = self._call(self._start_client, StartSession.Request(name=name))
         if not resp.success:
             return f"创建 session 失败: {resp.message}"
@@ -102,6 +110,7 @@ class AgentCliNode(Node):
         return f"session={self._session_id} name={self._session_name}"
 
     def session_resume(self, session_id: str) -> str:
+        """恢复指定 session 为当前 active session。"""
         resp = self._call(self._resume_client, ResumeSession.Request(session_id=session_id))
         if not resp.success:
             return f"恢复 session 失败: {resp.message}"
@@ -109,6 +118,7 @@ class AgentCliNode(Node):
         return f"session={self._session_id} name={self._session_name}"
 
     def session_end(self) -> str:
+        """结束当前 session 并清空本地会话状态。"""
         if not self._session_id:
             return "当前没有 active session"
         resp = self._call(self._end_client, EndSession.Request(session_id=self._session_id))
@@ -120,15 +130,18 @@ class AgentCliNode(Node):
         return f"session={old} 已结束，文件={resp.archive_path}"
 
     def session_info(self) -> str:
+        """返回当前 session 的 id 与名称。"""
         if not self._session_id:
             return "当前没有 session"
         return f"session={self._session_id} name={self._session_name}"
 
     def reset_env(self) -> str:
+        """调用 /nova/env/reset 重置仿真环境。"""
         resp = self._call(self._reset_client, Trigger.Request())
         return resp.message if resp.success else f"重置失败: {resp.message}"
 
     def env_info(self) -> str:
+        """查询并格式化仿真环境规格(sim/robots/action_spec/state/cameras 等)。"""
         resp = self._call(self._info_client, EnvInfo.Request())
         if not resp.success:
             return f"获取环境信息失败: {resp.message}"
@@ -146,6 +159,7 @@ class AgentCliNode(Node):
         return "\n".join(lines)
 
     def ping_llm(self) -> str:
+        """逐个探测 LLM provider 的连接延迟并格式化输出。"""
         lines = []
         for p in LLMClient().ping():
             if p["ok"]:
@@ -155,6 +169,7 @@ class AgentCliNode(Node):
         return "\n".join(lines) or "  (无 provider)"
 
     def help_text(self) -> str:
+        """返回 CLI 命令帮助文本。"""
         return (
             "命令:\n"
             "  /reset  重置仿真环境\n"
@@ -173,6 +188,7 @@ class AgentCliNode(Node):
 
     # ---------- nova_console 交互(HTTP,不依赖 ROS 服务) ----------
     def _console(self, path: str, method: str = "GET") -> dict:
+        """向 nova_console 的 HTTP API 发请求并返回解析后的 JSON。"""
         import requests
 
         url = str(self.get_parameter("console_url").value).rstrip("/") + path
@@ -181,11 +197,13 @@ class AgentCliNode(Node):
         return resp.json()
 
     def setup_console(self, profile: str | None) -> str:
+        """请求 nova_console 按 profile 拉起整套栈(默认 robocasa_loop)。"""
         name = profile or "robocasa_loop"
         data = self._console(f"/api/start/{name}", "POST")
         return f"启动 {name}: {'OK' if data.get('ok') else '失败 ' + str(data.get('error', ''))}"
 
     def sessions_console(self) -> str:
+        """查询 nova_console 的会话列表并格式化输出。"""
         data = self._console("/api/sessions")
         sessions = data.get("sessions") or []
         if not sessions:
@@ -194,6 +212,7 @@ class AgentCliNode(Node):
 
 
 def main(args=None) -> int:
+    """启动 CLI 主循环:后台线程 spin ROS,前台读取并处理用户输入。"""
     rclpy.init(args=args)
     node = AgentCliNode()
     executor = MultiThreadedExecutor()

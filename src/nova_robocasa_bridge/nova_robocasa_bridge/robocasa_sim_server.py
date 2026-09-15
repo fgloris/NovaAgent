@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""RoboCasa 仿真 server:独立进程托管环境,经 JSON 帧协议对外提供 reset/step 等接口。
+
+同时计算各相机的内参与投影矩阵,供感知 executor 做多视图 3D 定位。
+"""
 from __future__ import annotations
 import argparse
 import os
@@ -13,8 +17,8 @@ os.environ.setdefault("NUMBA_CACHE_DIR", "/tmp/numba_cache")
 import numpy as np
 
 
-# 直接 python 运行时(未 source install/setup.bash)也能找到 nova_common 包
 def _ensure_nova_common_importable() -> None:
+    """把 nova_common 所在目录加入 sys.path,使直接 python 运行时(未 source)也能 import。"""
     here = Path(__file__).resolve()
     candidates = []
     src_parent = here.parents[2]
@@ -47,7 +51,7 @@ _ROBOCASA_ACTION_MEANING = [
 
 
 def wxyz_to_xyzw(quaternion: Any) -> list[float]:
-    """Convert a MuJoCo/robosuite WXYZ quaternion to ROS XYZW."""
+    """把 MuJoCo/robosuite 格式的 WXYZ 四元数转成 ROS XYZW."""
     q = np.asarray(quaternion, dtype=float).reshape(-1)
     if q.size != 4:
         raise ValueError("quaternion must contain four values")
@@ -55,6 +59,7 @@ def wxyz_to_xyzw(quaternion: Any) -> list[float]:
 
 
 def _normalize_quat_xyzw(quaternion: Any) -> np.ndarray:
+    """归一化 XYZW 四元数;输入为 3 维时按轴角(罗德里格斯)转四元数。"""
     q = np.asarray(quaternion, dtype=float).reshape(-1)
     if q.size == 3:
         angle = float(np.linalg.norm(q))
@@ -70,6 +75,10 @@ def _normalize_quat_xyzw(quaternion: Any) -> np.ndarray:
 
 
 def _orientation_to_quat_xyzw(orientation: Any) -> np.ndarray:
+    """把多种姿态表示统一为 XYZW 四元数。
+
+    兼容:3 维(轴角/旋转向量)、4 维(四元数)、6 维(两个基向量,先正交化)、9 维(旋转矩阵)。
+    """
     value = np.asarray(orientation, dtype=float).reshape(-1)
     if value.size in (3, 4):
         return _normalize_quat_xyzw(value)
@@ -84,7 +93,7 @@ def _orientation_to_quat_xyzw(orientation: Any) -> np.ndarray:
 
 
 def _matrix_to_quat_xyzw(matrix: Any) -> np.ndarray:
-    """Convert a 3x3 rotation matrix to a normalized XYZW quaternion."""
+    """把 3x3 旋转矩阵转成归一化的 XYZW 四元数(按迹选择数值稳定的分支)。"""
     m = np.asarray(matrix, dtype=float).reshape(3, 3)
     trace = float(np.trace(m))
     if trace > 0.0:
@@ -109,6 +118,7 @@ def _matrix_to_quat_xyzw(matrix: Any) -> np.ndarray:
 
 
 def _quat_multiply_xyzw(a: Any, b: Any) -> np.ndarray:
+    """按 XYZW 顺序计算两个四元数的乘积(归一化后,结果表示先 b 后 a 的复合旋转)。"""
     ax, ay, az, aw = _normalize_quat_xyzw(a)
     bx, by, bz, bw = _normalize_quat_xyzw(b)
     return np.array([
@@ -120,6 +130,7 @@ def _quat_multiply_xyzw(a: Any, b: Any) -> np.ndarray:
 
 
 def _quat_to_matrix_xyzw(q: Any) -> np.ndarray:
+    """把 XYZW 四元数转成 3x3 旋转矩阵。"""
     x, y, z, w = _normalize_quat_xyzw(q)
     return np.array([
         [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
@@ -129,6 +140,7 @@ def _quat_to_matrix_xyzw(q: Any) -> np.ndarray:
 
 
 def _rotation_error(target: np.ndarray, current: np.ndarray) -> np.ndarray:
+    """计算目标旋转与当前旋转的误差向量(旋转矩阵反对称部分,近似轴角,供 IK 用)。"""
     error = target @ current.T
     return 0.5 * np.array([
         error[2, 1] - error[1, 2],
@@ -138,6 +150,10 @@ def _rotation_error(target: np.ndarray, current: np.ndarray) -> np.ndarray:
 
 
 def action_vector_to_dict(values: np.ndarray) -> dict[str, list[float]]:
+    """把规范动作向量 [pos3,rot3,gripper,base4,control_mode] 转成 RoboCasa 动作 dict。
+
+    长度不足时补零,超出部分截断,并统一 clip 到 [-1, 1]。
+    """
     values = np.ravel(values).astype(np.float32)
     if values.size > len(_ROBOCASA_ACTION_MEANING):
         raise ValueError(
@@ -214,6 +230,8 @@ def _apply_render_quality(env: Any, quality: str) -> None:
 
 
 class RoboCasaSession:
+    """托管一个 RoboCasa gym 环境,处理 reset/step/EEF 轨迹等请求(带线程锁)。"""
+
     def __init__(self, scene_config: dict[str, Any] | None = None) -> None:
         self.scene_config = scene_config or {}
         self.env = None
@@ -222,6 +240,7 @@ class RoboCasaSession:
         self._lock = threading.RLock()
 
     def reset(self, request: dict[str, Any]) -> dict[str, Any]:
+        """按需初始化环境并 reset,返回 obs、规格、sim 信息与机器人状态。"""
         with self._lock:
             self._ensure_env(request)
             assert self.env is not None
@@ -244,6 +263,7 @@ class RoboCasaSession:
         }
 
     def step(self, request: dict[str, Any]) -> dict[str, Any]:
+        """用请求中的规范动作步进一次环境,返回新的 obs/reward/terminated 等。"""
         with self._lock:
             if self.env is None:
                 raise RuntimeError("environment is not initialized; call reset first")
@@ -266,6 +286,7 @@ class RoboCasaSession:
         return response
 
     def robot_state(self, request: dict[str, Any] | None = None) -> dict[str, Any]:
+        """返回当前机器人的 EEF/关节/夹爪状态(不步进环境)。"""
         del request
         with self._lock:
             if self.env is None:
@@ -273,12 +294,14 @@ class RoboCasaSession:
             return {"ok": True, "robot_state": self._build_robot_state(self.latest_obs or {})}
 
     def validate_eef_trajectory(self, request: dict[str, Any]) -> dict[str, Any]:
+        """校验 EEF 路径点并对每个点求解 IK,返回关节解序列。"""
         with self._lock:
             waypoints = self._validate_waypoint_payload(request.get("waypoints"))
             solutions = self._solve_trajectory_ik(waypoints, request)
             return {"ok": True, "valid": True, "solutions": solutions}
 
     def step_eef(self, request: dict[str, Any]) -> dict[str, Any]:
+        """把单个 EEF 路径点转成相对位姿增量并按 OSC 输出上限归一化后步进一次。"""
         with self._lock:
             if self.env is None:
                 raise RuntimeError("environment is not initialized; call reset first")
@@ -318,6 +341,7 @@ class RoboCasaSession:
             }
 
     def _validate_waypoint_payload(self, raw: Any) -> list[dict[str, Any]]:
+        """校验并规范化路径点:位置需在工作空间内,姿态统一为 XYZW 四元数。"""
         if not isinstance(raw, list) or not raw:
             raise ValueError("empty_waypoints")
         workspace = self.scene_config.get("workspace", {"min": [-0.8, -0.8, 0.0], "max": [0.8, 0.8, 1.2]})
@@ -339,6 +363,7 @@ class RoboCasaSession:
         return result
 
     def _obs_value(self, obs: dict[str, Any], *names: str) -> Any:
+        """按候选名依次查找 obs 值,兼容带/不带 "state." 前缀的键。"""
         for name in names:
             for key in (f"state.{name}", name):
                 if key in obs:
@@ -346,6 +371,11 @@ class RoboCasaSession:
         return None
 
     def _eef_pose_base(self, obs: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+        """返回 EEF 在机器人基座坐标系下的 (位置, XYZW 四元数)。
+
+        优先取 obs 里现成的相对量;缺失时回退到 sim 的 site 世界位姿,
+        再用基座位姿做逆变换(旋转转置)换算到基座系。
+        """
         position = self._obs_value(obs, "end_effector_position_relative", "robot0_base_to_eef_pos")
         orientation = self._obs_value(obs, "end_effector_rotation_relative", "robot0_base_to_eef_quat")
         if position is not None and orientation is not None:
@@ -365,11 +395,13 @@ class RoboCasaSession:
 
     @staticmethod
     def _flatten_indexes(value: Any) -> list[int]:
+        """把任意形状的索引容器展平为 int 列表(None 返回空列表)。"""
         if value is None:
             return []
         return [int(v) for v in np.asarray(value).reshape(-1)]
 
     def _joint_data(self) -> tuple[list[str], list[int], list[int]]:
+        """解析机器人关节名及其在 qpos/qvel 中的索引;优先按名字查,回退到机器人自带索引。"""
         robot = self.env.unwrapped.robots[0]
         names: list[str] = []
         for attribute in ("base_joints", "torso_joints", "robot_joints", "joint_names"):
@@ -396,6 +428,7 @@ class RoboCasaSession:
         return [str(v) for v in names[:count]], qpos_ids[:count], qvel_ids[:count]
 
     def _build_robot_state(self, obs: dict[str, Any]) -> dict[str, Any]:
+        """汇总机器人状态:EEF 位姿、关节名/位置/速度、夹爪位置,供 /robot_state 与心跳使用。"""
         position, orientation = self._eef_pose_base(obs)
         names, qpos_ids, qvel_ids = self._joint_data()
         data = self.env.unwrapped.sim.data
@@ -421,6 +454,7 @@ class RoboCasaSession:
         }
 
     def _arm_indexes(self) -> tuple[list[int], list[int]]:
+        """返回机械臂关节在 qpos/qvel 中的索引;优先用 arm 专属索引,回退取末尾 7 个。"""
         robot = self.env.unwrapped.robots[0]
         qpos = self._flatten_indexes(getattr(robot, "_ref_arm_joint_pos_indexes", None))
         qvel = self._flatten_indexes(getattr(robot, "_ref_arm_joint_vel_indexes", None))
@@ -432,6 +466,7 @@ class RoboCasaSession:
         return qpos, qvel
 
     def _target_world(self, waypoint: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+        """把路径点从基座坐标系变换到世界坐标系,返回 (世界位置, 世界旋转矩阵)。"""
         robot = self.env.unwrapped.robots[0]
         base_position = np.asarray(getattr(robot, "base_pos", [0.0, 0.0, 0.0]), dtype=float)
         base_rotation = _quat_to_matrix_xyzw(wxyz_to_xyzw(getattr(robot, "base_ori", [1.0, 0.0, 0.0, 0.0])))
@@ -439,6 +474,11 @@ class RoboCasaSession:
                 base_rotation @ _quat_to_matrix_xyzw(waypoint["orientation"]))
 
     def _solve_trajectory_ik(self, waypoints: list[dict[str, Any]], constraints: dict[str, Any]) -> list[list[float]]:
+        """对每个路径点用阻尼最小二乘(DLS)迭代求解机械臂关节角。
+
+        每步由 site 雅可比反解位姿误差(位置 + 旋转),并对步长/关节限位/关节跳变设约束;
+        求解前后保存并恢复 sim 状态,避免污染真实环境。
+        """
         if self.env is None:
             raise RuntimeError("environment is not initialized; call reset first")
         import mujoco
@@ -503,6 +543,7 @@ class RoboCasaSession:
 
     @staticmethod
     def _enforce_joint_limits(model: Any, data: Any, qpos_ids: list[int]) -> None:
+        """把受限关节的 qpos 夹到其 [low, high] 范围内(只处理给定 qpos 索引)。"""
         for joint_id in range(int(model.njnt)):
             address = int(model.jnt_qposadr[joint_id])
             if address not in qpos_ids or not bool(model.jnt_limited[joint_id]):
@@ -511,6 +552,7 @@ class RoboCasaSession:
             data.qpos[address] = np.clip(data.qpos[address], low, high)
 
     def _osc_output_max(self) -> np.ndarray:
+        """读取右臂 OSC 控制器每步输出的最大值(用于把位姿增量归一化到动作空间)。"""
         robot = self.env.unwrapped.robots[0]
         controller = getattr(robot, "composite_controller", None)
         parts = getattr(controller, "part_controllers", {})
@@ -524,13 +566,14 @@ class RoboCasaSession:
         return values[:6]
 
     def close(self) -> None:
+        """关闭底层环境并清空缓存配置。"""
         if self.env is not None:
             self.env.close()
             self.env = None
             self.env_config = None
 
-    # 归一化键名(修掉相机/state 前缀不匹配)+ 指令统一写入 state.instruction
     def _prepare_obs(self, obs: dict[str, Any], info: dict[str, Any]) -> dict[str, Any]:
+        """归一化键名(修掉相机/state 前缀不匹配)并把指令统一写入 state.instruction。"""
         obs = normalize_obs(obs)
         instr = obs.get("state.annotation.human.task_description", "")
         if not instr:
@@ -539,6 +582,7 @@ class RoboCasaSession:
         return obs
 
     def _ensure_env(self, request: dict[str, Any]) -> None:
+        """按请求与 scene 配置创建 gym 环境;配置未变则复用现有环境。"""
         scene = self.scene_config
         config = {
             "env_id": request["env_id"],
@@ -579,6 +623,7 @@ class RoboCasaSession:
         self.env_config = config
 
     def _action_spec(self) -> dict[str, Any]:
+        """返回动作维度与各维含义;超出已知含义的维度用 dim{i} 占位。"""
         dim = None
         if self.env is not None:
             try:
@@ -595,6 +640,7 @@ class RoboCasaSession:
         return {"dim": dim, "meaning": meaning}
 
     def _sim_info(self) -> dict[str, Any]:
+        """返回仿真元信息:sim 名、机器人、控制器、env_id 与各相机投影。"""
         config = self.env_config or {}
         controller = ""
         cameras: dict[str, Any] = {}
@@ -613,10 +659,13 @@ class RoboCasaSession:
             "cameras": cameras,
         }
 
-    # 相机名取自 mujoco 原生 MjModel。robosuite 的 sim.model 是 binding_utils 包装类,
-    # 底层 mujoco.MjModel 在 ._model,mj_id2name 只接受它(枚举需先转 int)。
     @staticmethod
     def _camera_names(model: Any) -> list[str]:
+        """取 mujoco 模型里的全部相机名。
+
+        robosuite 的 sim.model 是 binding_utils 包装类,底层 mujoco.MjModel 在 ._model,
+        mj_id2name 只接受它(枚举类型需先转 int)。
+        """
         base = getattr(model, "_model", None) or model
         if hasattr(base, "cam_names"):
             raw_names = base.cam_names
@@ -627,11 +676,13 @@ class RoboCasaSession:
         cam_type = int(cam_type) if cam_type is not None else 6
         return [mujoco.mj_id2name(base, cam_type, i) or "" for i in range(int(base.ncam))]
 
-    # 按 robosuite camera_utils 的约定计算各相机的投影矩阵,供外部(perception executor)三角化定位。
-    #   intrinsics: 3x3 内参(fx=fy=0.5*H/tan(fovy/2), 主点在图像中心)
-    #   projection: 3x4 世界->像素投影矩阵,project(X)=P@[X;1],归一化后 col=x/z, row=y/z
-    # 键为 mujoco 模型相机名,与 obs 的 video.* 键一致(robocasa 相机名即 model cam 名)。
     def _camera_projections(self) -> dict[str, Any]:
+        """按 robosuite camera_utils 约定计算各相机的内参与投影矩阵,供感知 executor 三角化定位。
+
+        intrinsics: 3x3 内参(fx=fy=0.5*H/tan(fovy/2),主点在图像中心);
+        projection: 3x4 世界->像素投影矩阵,project(X)=P@[X;1],归一化后 col=x/z, row=y/z。
+        键为 mujoco 模型相机名,与 obs 的 video.* 键一致(robocasa 相机名即 model cam 名)。
+        """
         config = self.env_config or {}
         height = int(config.get("camera_height", 256))
         width = int(config.get("camera_width", 256))
@@ -694,6 +745,7 @@ def _default_scene_config() -> str | None:
 
 
 def main() -> int:
+    """命令行入口:加载 scene 配置、预热环境并启动 JSON 帧服务。"""
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8766)
