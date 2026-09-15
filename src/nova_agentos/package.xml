@@ -18,7 +18,7 @@
   <exec_depend>nova_executor_raw</exec_depend>
   <exec_depend>nova_executor_manager</exec_depend>
   <exec_depend>nova_vla_executor</exec_depend>
-  <exec_depend>nova_preception_executor</exec_depend>
+  <exec_depend>nova_perception_executor</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

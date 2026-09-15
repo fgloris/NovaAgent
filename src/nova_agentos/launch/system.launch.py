@@ -10,7 +10,7 @@ def generate_launch_description():
     skills_dir = get_package_share_directory("nova_agentos") + "/skills"
     vla_config = Path(get_package_share_directory("nova_vla_executor")) / "config" / "vla.yaml"
     perception_config = (
-        Path(get_package_share_directory("nova_preception_executor")) / "config" / "perception.yaml"
+        Path(get_package_share_directory("nova_perception_executor")) / "config" / "perception.yaml"
     )
     robocasa_config = (
         Path(get_package_share_directory("nova_robocasa_bridge")) / "config" / "bridge.yaml"
@@ -44,9 +44,9 @@ def generate_launch_description():
                 output="screen",
             ),
             Node(
-                package="nova_preception_executor",
-                executable="nova_preception_executor_node",
-                name="nova_preception_executor",
+                package="nova_perception_executor",
+                executable="nova_perception_executor_node",
+                name="nova_perception_executor",
                 output="screen",
                 parameters=[str(perception_config)],
             ),

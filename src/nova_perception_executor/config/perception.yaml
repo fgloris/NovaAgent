@@ -1,4 +1,4 @@
-nova_preception_executor:
+nova_perception_executor:
   ros__parameters:
     # 参与三角化的相机逻辑名(与 env 观测里的 video.* 键对应,用于匹配投影矩阵)
     camera_names: ["robot0_agentview_left", "robot0_agentview_right"]
@@ -17,3 +17,13 @@ nova_preception_executor:
     max_rounds: 5
     max_restarts: 2
     max_reproj_error_px: 45.0
+
+    # 可视化工具默认参数(工具调用参数可逐次覆盖)
+    draw_topic: "/nova/perception/draw"   # 绘制结果发布话题
+    draw_alpha: 0.45                      # 半透明箭头 alpha
+    draw_supersample: 2                   # 抗锯齿超采样倍数
+    arrow_radius: 0.006                   # 箭头杆半径(m)
+    point_radius: 0.02                    # 点小球半径(m)
+    axis_length: 0.1                      # 坐标系轴长(m)
+    segments: 16                          # 圆周分段数
+    image_cache_size: 20                  # 已绘制图 LRU 上限(image_id 可复用)

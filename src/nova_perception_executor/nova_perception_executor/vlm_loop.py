@@ -14,7 +14,7 @@ import time
 
 import numpy as np
 
-from nova_preception_executor.vision_geometry import (
+from nova_perception_executor.vision_geometry import (
     draw_grid,
     draw_marker,
     encode_image,

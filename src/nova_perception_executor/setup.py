@@ -1,7 +1,7 @@
 from glob import glob
 from setuptools import find_packages, setup
 
-package_name = "nova_preception_executor"
+package_name = "nova_perception_executor"
 
 setup(
     name=package_name,
@@ -20,7 +20,7 @@ setup(
     license="MIT",
     entry_points={
         "console_scripts": [
-            "nova_preception_executor_node = nova_preception_executor.perception_executor_node:main",
+            "nova_perception_executor_node = nova_perception_executor.perception_executor_node:main",
         ],
     },
 )
