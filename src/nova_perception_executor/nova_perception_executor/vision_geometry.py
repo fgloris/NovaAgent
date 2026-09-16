@@ -1,9 +1,9 @@
 """感知几何:网格↔像素换算、DLT 三角化、重投影误差、图像标注。纯 numpy,无 ROS 依赖。"""
-import base64
-import io
 import re
 
 import numpy as np
+
+from nova_common import image_codec
 
 
 # ---------- 投影 ----------
@@ -181,35 +181,17 @@ def _put_label(img, text, x, y, color, font=None):
     return img
 
 
-_ENCODE_MAX_SIZE = 768
+_ENCODE_MAX_SIZE = image_codec.DEFAULT_MAX_IMAGE_SIZE
 
 
 def sent_image_size(height, width, max_size=_ENCODE_MAX_SIZE):
     """按 encode_image 的等比缩小规则(只缩不放)返回实际发送给 VLM 的 (宽, 高)。"""
-    scale = min(1.0, max_size / max(height, width))
-    if scale < 1.0:
-        return int(round(width * scale)), int(round(height * scale))
-    return int(width), int(height)
+    return image_codec.display_size(width, height, max_size)
 
 
 def encode_image(img, max_size=_ENCODE_MAX_SIZE, quality=80):
     """把图像等比缩小后编码为 data:image/jpeg;base64, 字符串,供 VLM 接口使用。"""
-    if img.dtype != np.uint8:
-        img = np.clip(img, 0, 255).astype(np.uint8)
-    h, w = img.shape[:2]
-    cw, ch = sent_image_size(h, w, max_size)
-    if (cw, ch) != (w, h):
-        img = _resize(img, cw, ch)
-    buf = io.BytesIO()
-    from PIL import Image as PILImage
-    PILImage.fromarray(img, mode="RGB").save(buf, format="JPEG", quality=quality)
-    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-
-
-def _resize(img, w, h):
-    """用 PIL 把图像缩放到 (w, h)。"""
-    from PIL import Image as PILImage
-    return np.asarray(PILImage.fromarray(img, mode="RGB").resize((w, h)))
+    return image_codec.encode_data_url(img, max_size=max_size, quality=quality)
 
 
 # ---------- 3D 网格构建与投影渲染(base 系) ----------

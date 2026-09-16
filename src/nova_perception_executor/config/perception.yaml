@@ -1,7 +1,7 @@
 nova_perception_executor:
   ros__parameters:
-    # 参与三角化的相机逻辑名(与 env 观测里的 video.* 键对应,用于匹配投影矩阵)
-    camera_names: ["robot0_agentview_left", "robot0_agentview_right"]
+    # 启动即订阅的相机(其余相机会从 /nova/env/obs 自动发现并补订阅)
+    camera_names: ["robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand"]
 
     # 图像输入话题:不填时按 {env_ns}/camera/{name}/image_raw 推导;
     # 显式填写时必须与 camera_names 一一对应(顺序一致)
@@ -12,13 +12,12 @@ nova_perception_executor:
 
     heartbeat_rate_hz: 1.0
 
-    # VLM 定位默认参数(工具调用参数可逐次覆盖)
-    grid_size: 8
-    max_rounds: 5
-    max_restarts: 2
-    max_reproj_error_px: 45.0
+    # 工具默认参数(工具调用参数可逐次覆盖)
+    grid_size: 8                          # visualize_grid 默认网格划分
+    display_max_size: 768                 # VLM 显示分辨率最长边;需与 agentos 的 vlm_max_image_size 一致
+    pixel_radius: 12.0                    # visualize_pixels 圆圈半径(显示像素)
 
-    # 可视化工具默认参数(工具调用参数可逐次覆盖)
+    # 可视化渲染默认参数(不暴露给模型)
     draw_topic: "/nova/perception/draw"   # 绘制结果发布话题
     draw_alpha: 0.60                      # 半透明箭头 alpha
     draw_supersample: 2                   # 抗锯齿超采样倍数

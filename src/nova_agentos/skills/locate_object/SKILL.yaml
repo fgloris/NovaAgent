@@ -1,0 +1,10 @@
+# skill 元数据:name 必须唯一,description 会进入 skill 索引供 LLM 选择
+name: locate_object
+description: 多视角像素重投影定位物体 3D 基座系坐标的流程经验(网格粗定位 + 三角化 + 画圈核对)
+tags:
+  - perception
+  - localization
+requires_tools:
+  - visualize_grid
+  - reproject_pixels
+  - visualize_pixels

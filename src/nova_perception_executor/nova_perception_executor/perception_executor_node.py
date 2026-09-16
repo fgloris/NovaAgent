@@ -2,13 +2,15 @@
 """nova_perception_executor:感知类 MCP executor。
 
 常驻订阅 /nova/env/camera/* 滚动缓存最新帧,提供:
-  - locate_object_3d:多视图 VLM 3D 定位(base 系坐标);
+  - reproject_pixels:多视图像素位置 -> 三角化 3D 点 + 重投影误差;
   - visualize_frame / visualize_point / visualize_segment / visualize_ray:
-    在图像上叠加 3D 几何标注(半透明圆柱+圆锥箭头,画家算法渲染),结果发到绘制话题。
+    在图像上叠加 3D 几何标注(半透明圆柱+圆锥箭头,画家算法渲染);
+  - visualize_pixels:按像素坐标在图像上画圈;
+  - visualize_grid:在图像上叠加定位网格。
+绘制结果发到绘制话题,并通过 result_json.images 注入 VLM。
 """
 import json
 import time
-from typing import Any
 
 import numpy as np
 import rclpy
@@ -21,40 +23,69 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
-from nova_common.llm_client import LLMClient
+from nova_common import image_codec
 from nova_interfaces.action import MCPExecute
 from nova_interfaces.msg import ExecutorHeartbeat, ToolDescriptor
 from nova_interfaces.srv import EnvInfo
 
 from nova_perception_executor import vision_geometry as vg
-from nova_perception_executor.vlm_loop import VlmLocator
 
 HEARTBEAT_TOPIC = "/nova/executors/heartbeat"
 _CAM_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
 
 DEFAULT_CAMERAS = ["robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand"]
 
-LOCATE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "object": {"type": "string", "description": "要定位的物体描述,如 '红色杯子'"},
-        "camera_names": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "参与三角化的相机名(默认取节点 camera_names 参数)",
-        },
-        "grid_size": {"type": "integer", "description": "网格划分大小,默认取节点参数(默认 8,即 8x8)"},
-        "max_rounds": {"type": "integer", "description": "最大调整轮数,默认取节点参数(默认 5)"},
-        "max_restarts": {"type": "integer", "description": "重投影不一致时的最大重来次数,默认取节点参数(默认 2)"},
-        "max_reproj_error_px": {"type": "number", "description": "重投影误差阈值(像素),默认取节点参数(默认 25)"},
-    },
-    "required": ["object"],
-}
-
 _IMAGE_DESC = "源图:相机名(用该相机最新帧)或之前绘制工具返回的 image_id(可在其基础上继续叠加)"
 _RADIUS_DESC = "箭头/杆半径(m,base 系投影前固定值,近大远小),默认取节点参数"
 _COLOR_DESC = "颜色:名称(red/green/blue/yellow/cyan/magenta/orange/white)或 [r,g,b](0-255)"
 # 渲染风格(alpha/描边/圆周分段/字号/注入尺寸)只走节点参数/yaml,不暴露给模型
+# 像素坐标一律用 VLM 看到的显示分辨率;工具内部自动换算到原始分辨率。
+
+REPROJECT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "points": {
+            "type": "object",
+            "description": "各相机的目标像素坐标 {相机名: [u, v]}(显示分辨率,至少 2 个相机)",
+            "additionalProperties": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+        },
+        "image_size": {
+            "type": "object",
+            "description": "可选:覆盖各相机像素坐标所属的显示分辨率 {相机名: [w, h]}",
+            "additionalProperties": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+        },
+    },
+    "required": ["points"],
+}
+
+VISUALIZE_PIXELS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "image": {"type": "string", "description": _IMAGE_DESC},
+        "points": {
+            "description": "要画圈的像素坐标(显示分辨率):[[u,v],...] 或 {label:[u,v]}",
+            "oneOf": [
+                {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}},
+                {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}},
+            ],
+        },
+        "radius_px": {"type": "number", "description": "圆圈半径(显示像素),默认取节点参数"},
+        "color": {"description": _COLOR_DESC},
+        "label": {"type": "string", "description": "可选文本标签"},
+        "image_size": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2,
+                       "description": "可选:覆盖像素坐标所属的显示分辨率 [w, h]"},
+    },
+    "required": ["image", "points"],
+}
+
+VISUALIZE_GRID_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "image": {"type": "string", "description": _IMAGE_DESC},
+        "grid_size": {"type": "integer", "description": "网格划分大小(默认取节点参数,默认 8 即 8x8)"},
+    },
+    "required": ["image"],
+}
 
 VISUALIZE_FRAME_SCHEMA = {
     "type": "object",
@@ -118,11 +149,10 @@ VISUALIZE_RAY_SCHEMA = {
 }
 
 TOOLS = {
-    "locate_object_3d": (
-        "多视图 VLM 3D 定位:读取 /nova/env/* 最新相机帧与投影矩阵,"
-        "先让 VLM 在各图上用网格单元粗定位并 DLT 三角化,再把结果画回调试图,"
-        "以像素偏移量迭代微调,返回物体 3D 基座系坐标(x,y,z,与 /robot0/eef_pose 同系)。",
-        LOCATE_SCHEMA,
+    "reproject_pixels": (
+        "多视图像素重投影:输入各相机上目标的像素坐标(显示分辨率,至少 2 个相机),"
+        "用相机投影矩阵 DLT 三角化出 3D 基座系坐标,并返回各视图的重投影像素与误差、是否收敛。",
+        REPROJECT_SCHEMA,
     ),
     "visualize_frame": (
         "在图像上叠加一个 3D 坐标系(base 系):origin + orientation(xyzw),"
@@ -140,6 +170,14 @@ TOOLS = {
     "visualize_ray": (
         "在图像上叠加一条 3D 射线/方向(base 系 origin + orientation),画成半透明箭头。",
         VISUALIZE_RAY_SCHEMA,
+    ),
+    "visualize_pixels": (
+        "按像素坐标在图像上画空心圆圈(显示分辨率),用于核对物体像素位置;可带文本标签。",
+        VISUALIZE_PIXELS_SCHEMA,
+    ),
+    "visualize_grid": (
+        "在图像上叠加 grid_size×grid_size 网格并标注 行-列 编号,用于粗定位。",
+        VISUALIZE_GRID_SCHEMA,
     ),
 }
 
@@ -198,9 +236,7 @@ class PerceptionExecutorNode(Node):
         self.declare_parameter("env_ns", "/nova/env")
         self.declare_parameter("heartbeat_rate_hz", 1.0)
         self.declare_parameter("grid_size", 8)
-        self.declare_parameter("max_rounds", 5)
-        self.declare_parameter("max_restarts", 2)
-        self.declare_parameter("max_reproj_error_px", 25.0)
+        self.declare_parameter("display_max_size", image_codec.DEFAULT_MAX_IMAGE_SIZE)
         # 绘制相关默认参数
         self.declare_parameter("draw_topic", "/nova/perception/draw")
         self.declare_parameter("draw_alpha", 0.45)
@@ -210,6 +246,7 @@ class PerceptionExecutorNode(Node):
         self.declare_parameter("draw_outline_color", [0, 0, 0])
         self.declare_parameter("label_font_scale", 10.0)
         self.declare_parameter("inject_image_max_size", 0)
+        self.declare_parameter("pixel_radius", 12.0)
         self.declare_parameter("arrow_radius", 0.006)
         self.declare_parameter("point_radius", 0.02)
         self.declare_parameter("axis_length", 0.1)
@@ -232,9 +269,7 @@ class PerceptionExecutorNode(Node):
             }
         self.env_info_srv = f"{self.env_ns}/info"
         self._grid_size = int(self.get_parameter("grid_size").value)
-        self._max_rounds = int(self.get_parameter("max_rounds").value)
-        self._max_restarts = int(self.get_parameter("max_restarts").value)
-        self._max_reproj_error_px = float(self.get_parameter("max_reproj_error_px").value)
+        self._display_max_size = int(self.get_parameter("display_max_size").value)
 
         self._draw_topic = str(self.get_parameter("draw_topic").value)
         self._alpha = float(self.get_parameter("draw_alpha").value)
@@ -244,6 +279,7 @@ class PerceptionExecutorNode(Node):
         self._outline_color = _parse_color(self.get_parameter("draw_outline_color").value, (0, 0, 0))
         self._label_font_scale = float(self.get_parameter("label_font_scale").value)
         self._inject_image_max_size = int(self.get_parameter("inject_image_max_size").value)
+        self._pixel_radius = float(self.get_parameter("pixel_radius").value)
         self._arrow_radius = float(self.get_parameter("arrow_radius").value)
         self._point_radius = float(self.get_parameter("point_radius").value)
         self._axis_length = float(self.get_parameter("axis_length").value)
@@ -261,32 +297,10 @@ class PerceptionExecutorNode(Node):
         self._image_cache: dict[str, dict] = {}
         self._image_counter = 0
 
-        # debug 话题配置:off=不发布;sub=有订阅者才发布;on=总是发布
-        self.declare_parameter("vlm_debug_mode", "on")
-        mode = str(self.get_parameter("vlm_debug_mode").value).strip().lower()
-        if mode not in ("off", "sub", "on"):
-            raise RuntimeError(f"vlm_debug_mode 只支持 off|sub|on, 收到 {mode!r}")
-        self._debug_mode = mode
-        self.declare_parameter("vlm_round_topic", "/nova/perception/vlm_round")
-        self._round_topic = str(self.get_parameter("vlm_round_topic").value).strip()
-        self.declare_parameter("vlm_input_topic", "/nova/perception/vlm_input")
-        self._input_base = str(self.get_parameter("vlm_input_topic").value).strip().rstrip("/")
-
         self._info_cg = MutuallyExclusiveCallbackGroup()
         self._info_client = self.create_client(
             EnvInfo, self.env_info_srv, callback_group=self._info_cg
         )
-        self._llm = LLMClient(vision=True)
-        self._round_pub = None
-        self._cam_pubs: dict[str, Any] = {}
-        if self._debug_mode != "off":
-            if self._round_topic:
-                self._round_pub = self.create_publisher(String, self._round_topic, 1)
-            if self._input_base:
-                for cam in self.camera_names:
-                    topic = f"{self._input_base}/{cam}"
-                    self._cam_pubs[cam] = self.create_publisher(Image, topic, 5)
-
         self._draw_pub = self.create_publisher(Image, self._draw_topic, 5)
 
         action_cg = ReentrantCallbackGroup()
@@ -307,7 +321,7 @@ class PerceptionExecutorNode(Node):
         self._publish_heartbeat()
         self.get_logger().info(
             f"感知 executor 就绪,相机={self.camera_names}, 工具={list(TOOLS)}, "
-            f"绘制话题={self._draw_topic}, vlm_debug_mode={self._debug_mode}"
+            f"绘制话题={self._draw_topic}"
         )
 
     def _publish_heartbeat(self) -> None:
@@ -400,10 +414,7 @@ class PerceptionExecutorNode(Node):
         def callback(goal_handle):
             try:
                 params = json.loads(goal_handle.request.params_json or "{}")
-                if name == "locate_object_3d":
-                    result_json = self._locate(params, task_id=goal_handle.request.trace_id)
-                else:
-                    result_json = self._handle_visualize(name, params)
+                result_json = self._handle_tool(name, params)
                 result = MCPExecute.Result()
                 result.success = True
                 result.result_json = json.dumps(result_json, ensure_ascii=False)
@@ -422,8 +433,10 @@ class PerceptionExecutorNode(Node):
 
         return callback
 
-    def _handle_visualize(self, name: str, params: dict) -> dict:
-        """把可视化工具名分发到对应绘制逻辑。"""
+    def _handle_tool(self, name: str, params: dict) -> dict:
+        """把工具名分发到对应实现。"""
+        if name == "reproject_pixels":
+            return self._reproject_pixels(params)
         if name == "visualize_frame":
             return self._draw_frame(params)
         if name == "visualize_point":
@@ -432,6 +445,10 @@ class PerceptionExecutorNode(Node):
             return self._draw_segment(params)
         if name == "visualize_ray":
             return self._draw_ray(params)
+        if name == "visualize_pixels":
+            return self._draw_pixels(params)
+        if name == "visualize_grid":
+            return self._draw_grid(params)
         raise ValueError(f"未知工具: {name}")
 
     # ---------- 图像源与缓存 ----------
@@ -626,97 +643,102 @@ class PerceptionExecutorNode(Node):
                                              out.shape[1], out.shape[0])
         return self._finish_draw(out, cam, source, "visualize_ray", self._status(warnings), params)
 
-    # ---------- locate_object_3d ----------
+    # ---------- 像素工具 ----------
 
-    def _locate(self, params: dict, task_id: str = "") -> dict:
-        """收集相机帧与投影矩阵,调用 VlmLocator 完成多视图 3D 定位。"""
-        object_desc = str(params.get("object", "")).strip()
-        if not object_desc:
-            return {"ok": False, "error": "缺少 object 参数"}
+    def _display_wh(self, source: str, native_wh: tuple[int, int], override=None) -> tuple[int, int]:
+        """返回像素坐标所属的显示分辨率:优先 override,否则按来源推断。"""
+        if override:
+            return int(override[0]), int(override[1])
+        if source in self._image_cache:
+            max_size = self._inject_image_max_size or max(native_wh)
+        else:
+            max_size = self._display_max_size
+        return image_codec.display_size(native_wh[0], native_wh[1], max_size)
 
+    def _reproject_pixels(self, params: dict) -> dict:
+        """多视图像素 -> 三角化 3D 点 + 重投影误差;输入/输出都用显示分辨率。"""
+        points = params.get("points")
+        if not isinstance(points, dict) or len(points) < 2:
+            raise ValueError("points 必须是至少 2 个相机的 {相机名:[u,v]}")
         projections = self._fetch_projections()
         if not projections:
-            return {"ok": False, "error": "env info 未提供相机投影矩阵(需升级 robocasa_sim_server)"}
+            raise RuntimeError("env info 未提供相机投影矩阵")
+        sizes = params.get("image_size") or {}
 
-        cams = params.get("camera_names") or self.camera_names
-        images, projs = {}, {}
+        cams = list(points.keys())
+        native_pts, native_projs, display_sizes, native_sizes = [], [], {}, {}
         for cam in cams:
-            key = self._match_projection(cam, projections)
-            frame = self._frames.get(cam)
-            if frame is None:
-                self.get_logger().warn(f"相机 {cam} 未收到帧")
-                continue
-            if key is None:
-                self.get_logger().warn(f"相机 {cam} 无投影矩阵(可用:{list(projections)})")
-                continue
-            images[cam] = frame
-            entry = projections[key]
-            if isinstance(entry, dict) and "projection" in entry:
-                entry = entry["projection"]
-            projs[cam] = entry
+            if cam not in self._frames:
+                raise RuntimeError(f"相机 {cam} 未收到帧")
+            native_wh = (self._frames[cam].shape[1], self._frames[cam].shape[0])
+            display_wh = self._display_wh(cam, native_wh, sizes.get(cam))
+            _, P = self._camera_calibration(cam, projections)
+            native_pts.append(image_codec.convert_points(list(points[cam]), display_wh, native_wh))
+            native_projs.append(P)
+            display_sizes[cam] = display_wh
+            native_sizes[cam] = native_wh
 
-        locator = VlmLocator(
-            self._llm,
-            grid_size=int(params.get("grid_size", self._grid_size)),
-            max_rounds=int(params.get("max_rounds", self._max_rounds)),
-            max_restarts=int(params.get("max_restarts", self._max_restarts)),
-            max_reproj_error_px=float(params.get("max_reproj_error_px", self._max_reproj_error_px)),
+        position = vg.triangulate(native_pts, native_projs)
+        errors_native = vg.reprojection_errors(native_pts, native_projs, position)
+        reprojected, errors = {}, {}
+        for cam, P, err in zip(cams, native_projs, errors_native):
+            native_wh = native_sizes[cam]
+            display_wh = display_sizes[cam]
+            uu, vv = vg.project_point(P, position)
+            reprojected[cam] = image_codec.convert_points([uu, vv], native_wh, display_wh)
+            errors[cam] = round(float(err) * (display_wh[0] / native_wh[0]), 3)
+        mean_error = sum(errors.values()) / len(errors)
+        return {
+            "ok": True,
+            "position": position,
+            "reprojected": reprojected,
+            "errors_px": errors,
+            "mean_error_px": round(mean_error, 3),
+            "display_size": {cam: list(display_sizes[cam]) for cam in cams},
+            "native_size": {cam: list(native_sizes[cam]) for cam in cams},
+        }
+
+    def _draw_pixels(self, params: dict) -> dict:
+        """按像素坐标在图像上画空心圆圈(输入显示分辨率,内部换算到原始分辨率)。"""
+        image, cam, K, P, source = self._resolve_image(params["image"])
+        native_wh = (image.shape[1], image.shape[0])
+        display_wh = self._display_wh(source, native_wh, params.get("image_size"))
+        raw = params.get("points")
+        if isinstance(raw, dict):
+            labeled = [(str(key), value) for key, value in raw.items()]
+        elif isinstance(raw, list):
+            labeled = [(None, value) for value in raw]
+        else:
+            raise ValueError("points 必须是 [[u,v],...] 或 {label:[u,v]}")
+        radius_native = float(params.get("radius_px", self._pixel_radius)) * (native_wh[0] / display_wh[0])
+        color = _parse_color(params.get("color"), (255, 80, 80))
+        out = image
+        warnings: list[str] = []
+        for label, uv in labeled:
+            if not isinstance(uv, (list, tuple)) or len(uv) != 2:
+                raise ValueError("每个点必须是 [u, v]")
+            if not (0 <= float(uv[0]) < display_wh[0] and 0 <= float(uv[1]) < display_wh[1]):
+                warnings.append(f"点 {label or uv} 超出画面")
+            native_px = image_codec.convert_points(list(uv), display_wh, native_wh)
+            out = vg.draw_marker(out, native_px, color, radius=radius_native, label=label)
+        return self._finish_draw(out, cam, source, "visualize_pixels", self._status(warnings), params)
+
+    def _draw_grid(self, params: dict) -> dict:
+        """在图像上叠加 grid_size×grid_size 网格并返回显示分辨率下的格子尺寸。"""
+        image, cam, K, P, source = self._resolve_image(params["image"])
+        native_wh = (image.shape[1], image.shape[0])
+        display_wh = self._display_wh(source, native_wh, params.get("image_size"))
+        grid_size = max(2, int(params.get("grid_size", self._grid_size)))
+        out = vg.draw_grid(image, grid_size)
+        result = self._finish_draw(out, cam, source, "visualize_grid", "drew successfully", params)
+        result.update(
+            {
+                "grid_size": grid_size,
+                "display_size": list(display_wh),
+                "cell_px": [display_wh[0] / grid_size, display_wh[1] / grid_size],
+            }
         )
-        return locator.locate(
-            object_desc,
-            images,
-            projs,
-            agent_context=str(params.get("_agent_context", "")),
-            task_id=task_id,
-            on_round=self._publish_vlm_round,
-            on_images=self._publish_vlm_images,
-        )
-
-    # ---------- debug 发布 ----------
-
-    def _want_debug_pub(self, pub) -> bool:
-        """debug 话题是否该发:on 恒发;sub 有订阅者才发;off 时 publisher 未创建。"""
-        if pub is None:
-            return False
-        if self._debug_mode == "on":
-            return True
-        if self._debug_mode == "sub":
-            return pub.get_subscription_count() > 0
-        return False
-
-    def _publish_vlm_round(self, payload: dict) -> None:
-        """VlmLocator 每轮回调:绘制图按相机发到各自话题,回合文本发到 vlm_round。"""
-        task_id = str(payload.get("task_id", ""))
-        round_tag = str(payload.get("round", ""))
-        if self._debug_mode != "off":
-            prompt = str(payload.get("prompt", ""))
-            reply = str(payload.get("reply", ""))
-            self.get_logger().info(
-                f"[vlm] task={task_id} round={round_tag}\nprompt: {prompt}\nreply: {reply}"
-            )
-        self._publish_vlm_images(payload)
-        if not self._want_debug_pub(self._round_pub):
-            return
-        try:
-            msg = String()
-            msg.data = json.dumps(payload, ensure_ascii=False)
-            self._round_pub.publish(msg)
-        except Exception as exc:
-            self.get_logger().warn(f"发布 vlm_round 失败: {exc}")
-
-    def _publish_vlm_images(self, payload: dict) -> None:
-        """只把标注图发到各相机 debug 话题(不写 vlm_round/日志),用于"发给模型前"推送。"""
-        task_id = str(payload.get("task_id", ""))
-        round_tag = str(payload.get("round", ""))
-        for cam, url in (payload.get("images") or {}).items():
-            pub = self._cam_pubs.get(cam)
-            if not self._want_debug_pub(pub):
-                continue
-            try:
-                frame_id = f"{task_id}|{round_tag}|{cam}"
-                pub.publish(self._data_url_to_image_msg(url, frame_id))
-            except Exception as exc:
-                self.get_logger().warn(f"发布 vlm 输入图 {cam} 失败: {exc}")
+        return result
 
     @staticmethod
     def _numpy_to_image_msg(image: np.ndarray, frame_id: str) -> Image:
@@ -731,19 +753,6 @@ class PerceptionExecutorNode(Node):
         msg.step = int(image.shape[1] * 3)
         msg.data = image.tobytes()
         return msg
-
-    @staticmethod
-    def _data_url_to_image_msg(data_url: str, frame_id: str) -> Image:
-        """把 data:image/jpeg;base64 URL 解码并转成 ROS Image 消息。"""
-        import base64
-        import io
-
-        from PIL import Image as PILImage
-
-        b64 = data_url.split(",", 1)[1]
-        jpeg = base64.b64decode(b64)
-        image = np.asarray(PILImage.open(io.BytesIO(jpeg)).convert("RGB"))
-        return PerceptionExecutorNode._numpy_to_image_msg(image, frame_id)
 
     def destroy_node(self) -> bool:
         return super().destroy_node()

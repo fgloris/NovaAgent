@@ -5,8 +5,6 @@
 """
 from __future__ import annotations
 
-import base64
-import io
 import json
 import threading
 import time
@@ -19,6 +17,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
+from nova_common import image_codec
 from nova_interfaces.srv import EnvInfo
 
 _CAM_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
@@ -176,24 +175,10 @@ class VisionObserver:
         return np.ascontiguousarray(frame)
 
     def _image_to_data_url(self, image: np.ndarray) -> str:
-        """等比缩小后编码为 data:image/jpeg;base64 字符串。"""
-        if image.dtype != np.uint8:
-            image = np.clip(image, 0, 255).astype(np.uint8)
-        h, w = image.shape[:2]
-        scale = min(1.0, self.max_image_size / max(h, w))
-        if scale < 1.0:
-            from PIL import Image as PILImage
-
-            image = np.asarray(
-                PILImage.fromarray(image, mode="RGB").resize(
-                    (int(round(w * scale)), int(round(h * scale)))
-                )
-            )
-        from PIL import Image as PILImage
-
-        buf = io.BytesIO()
-        PILImage.fromarray(image, mode="RGB").save(buf, format="JPEG", quality=self.jpeg_quality)
-        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+        """等比缩小后编码为 data:image/jpeg;base64 字符串(缩放规则与 image_codec 一致)。"""
+        return image_codec.encode_data_url(
+            image, max_size=self.max_image_size, quality=self.jpeg_quality
+        )
 
     @staticmethod
     def _snapshot_text(obs: dict[str, Any], frames: dict[str, tuple[np.ndarray, float]], cameras: list[str]) -> str:
