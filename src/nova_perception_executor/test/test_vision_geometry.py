@@ -58,3 +58,23 @@ def test_build_frame_and_cylinder_shapes():
     assert len(fv) > 0 and len(ff) > 0
     cv, cf, _ = vg.build_cylinder([0.0, 0.0, 0.0], [0.0, 0.0, 0.1], 0.005)
     assert len(cv) > 0 and len(cf) > 0
+
+
+def test_label_origin_clamps_inside_image():
+    box = (-2, -3, 40, 12)  # l, t, r, b
+    x0, y0 = vg.label_origin(box, (-100, -100), 200, 100, pad=2)
+    assert x0 + box[0] >= 2 - 1e-6
+    assert x0 + box[2] <= 200 - 2 + 1e-6
+    assert y0 + box[1] >= 2 - 1e-6
+    assert y0 + box[3] <= 100 - 2 + 1e-6
+    centered = vg.label_origin(box, (100, 50), 200, 100, pad=2)
+    assert centered[0] == pytest.approx(100 - (box[0] + box[2]) / 2)
+    assert centered[1] == pytest.approx(50 - (box[1] + box[3]) / 2)
+
+
+def test_draw_label_keeps_full_text_inside_image():
+    img = np.zeros((120, 300, 3), dtype=np.uint8)
+    corner = vg.draw_label(img, (-20, -20), "abc123", (255, 255, 255), font_px=20)
+    middle = vg.draw_label(img, (150, 60), "abc123", (255, 255, 255), font_px=20)
+    assert np.count_nonzero(corner) == np.count_nonzero(middle)
+    assert np.count_nonzero(corner) > 0

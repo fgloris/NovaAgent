@@ -7,6 +7,7 @@ import threading
 from typing import Callable
 
 from nova_common.llm_client import LLMClient
+from nova_common.tool_result import split_images
 
 from nova_agentos.mcp_adapter import McpAdapter, to_llm_tools
 from nova_agentos.memory import Compactor, ContextBuilder, SessionManager, TaskMemory
@@ -132,6 +133,7 @@ class TaskRunner:
                     return
                 
                 # 依次处理本轮的所有 tool calls
+                round_images: list[tuple[str, str, str]] = []
                 for tool_call in result.tool_calls:
                     name = tool_call["function"]["name"]
                     args = self._parse_args(tool_call)
@@ -147,7 +149,7 @@ class TaskRunner:
                     self.task.add_event("tool_call", tool_name=name, params=args)
                     self.manager.save_task(self.task)
                     self._event("tool_call", "working", f"调用 {name}: {args_text}")
-                    content = self._run_tool(name, args)
+                    content, images = self._run_tool(name, args)
                     failed = content.startswith("工具执行失败")
                     self.task.add_event(
                         "tool_result",
@@ -164,6 +166,8 @@ class TaskRunner:
                         }
                     )
                     self._event("tool_result", "working", f"{name} -> {content[:200]}")
+                    for image_id, url in images.items():
+                        round_images.append((name, image_id, url))
                     if failed:
                         fails += 1
                         if fails >= MAX_TOOL_FAILS:
@@ -171,17 +175,29 @@ class TaskRunner:
                             return
                     else:
                         fails = 0
+                # 本轮工具返回的图像合并成一条 user 多模态消息,下一轮 VLM 可见
+                if round_images:
+                    parts: list[dict] = []
+                    for tool_name, image_id, url in round_images:
+                        parts.append({"type": "text", "text": f"工具 {tool_name} 返回图像 {image_id}"})
+                        parts.append({"type": "image_url", "image_url": {"url": url}})
+                    self.runtime_messages.append({"role": "user", "content": parts})
+                    self.task.add_event(
+                        "tool_images",
+                        images=[{"tool": t, "image_id": i} for t, i, _ in round_images],
+                    )
+                    self.manager.save_task(self.task)
             self._finish("failed", f"超过单任务最大步数 {MAX_STEPS_PER_TASK}")
         except Exception as exc:
             self._finish("failed", f"agent loop 异常: {exc}")
 
-    def _run_tool(self, name: str, args: dict) -> str:
-        """执行一次工具调用:load_skill 本地处理,其余转发给 MCP adapter;异常返回失败文本。"""
+    def _run_tool(self, name: str, args: dict) -> tuple[str, dict[str, str]]:
+        """执行一次工具调用,返回 (给模型的文本, 待注入的图像 {id: data_url})。"""
         try:
             if name == "load_skill":
                 skill = args.get("skill", "")
                 contents = self.skills.load([skill])
-                return contents.get(skill) or f"未找到 skill: {skill}"
+                return contents.get(skill) or f"未找到 skill: {skill}", {}
 
             def feedback(status: str, message: str) -> None:
                 self.task.add_event(
@@ -197,9 +213,10 @@ class TaskRunner:
                 timeout_sec=300.0,
                 feedback_callback=feedback,
             )
-            return json.dumps(result, ensure_ascii=False)
+            stripped, images = split_images(result)
+            return json.dumps(stripped, ensure_ascii=False), images
         except Exception as exc:
-            return f"工具执行失败: {exc}"
+            return f"工具执行失败: {exc}", {}
 
     def _observations(self) -> list[dict]:
         """收集各观测 provider(视觉、机器人状态)的消息;单个 provider 失败不影响其它。"""

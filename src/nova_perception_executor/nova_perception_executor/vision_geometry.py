@@ -498,21 +498,35 @@ def rasterize_mesh(img, vertices, faces, colors, intrinsics, projection,
     return np.asarray(Image.alpha_composite(base, overlay).convert("RGB"))
 
 
+def label_origin(box, center, width, height, pad=0):
+    """计算让文字视觉中心落在 center、且完整落在 [0,width]x[0,height] 内的绘制原点。
+
+    box = textbbox((0,0), text, font) 的 (l, t, r, b);pad 为描边/留白(像素)。
+    文字实际占据 [x0+l-pad, x0+r+pad],据此夹取 x0,避免贴边被裁掉。
+    """
+    left, top, right, bottom = box
+    x0 = float(center[0]) - (left + right) / 2.0
+    y0 = float(center[1]) - (top + bottom) / 2.0
+    x0 = min(max(x0, pad - left), max(pad - left, width - right - pad))
+    y0 = min(max(y0, pad - top), max(pad - top, height - bottom - pad))
+    return x0, y0
+
+
 def draw_label(img, pixel, text, color=(255, 255, 255), font_px=18):
-    """在像素位置绘制带描边的文字标签(居中)。"""
+    """在像素位置绘制带描边的文字标签(居中),并夹取到图像范围内。"""
     if pixel is None:
         return img
     from PIL import Image, ImageDraw
     font = _load_grid_font(int(font_px))
     out = Image.fromarray(img)
     draw = ImageDraw.Draw(out)
-    x, y = float(pixel[0]), float(pixel[1])
+    h, w = img.shape[:2]
+    stroke = 2 if font is not None else 0
+    box = draw.textbbox((0, 0), text, font=font) if font is not None else draw.textbbox((0, 0), text)
+    x0, y0 = label_origin(box, pixel, w, h, pad=stroke)
     if font is not None:
-        box = draw.textbbox((0, 0), text, font=font)
-        x -= (box[2] - box[0]) / 2
-        y -= (box[3] - box[1]) / 2
-        draw.text((x, y), text, fill=tuple(int(c) for c in color), font=font,
-                  stroke_width=2, stroke_fill=(0, 0, 0))
+        draw.text((x0, y0), text, fill=tuple(int(c) for c in color), font=font,
+                  stroke_width=stroke, stroke_fill=(0, 0, 0))
     else:
-        draw.text((x, y), text, fill=tuple(int(c) for c in color))
+        draw.text((x0, y0), text, fill=tuple(int(c) for c in color))
     return np.asarray(out)
