@@ -884,7 +884,9 @@ class PerceptionExecutorNode(Node):
             native_px = image_codec.convert_points(list(uv), display_wh, native_wh)
             out = vg.draw_marker(out, native_px, color, radius=radius_native, label=label,
                                  font_px=font_px, ring_ratio=float(cfg["ring_ratio"]),
-                                 font_path=self._font_path or None, font_index=self._font_index)
+                                 font_path=self._font_path or None, font_index=self._font_index,
+                                 supersample=self._supersample,
+                                 stroke_width=self._stroke_width, stroke_fill=self._stroke_color)
         return self._finish_draw(out, cam, source, "visualize_pixels", self._status(warnings), params)
 
     def _draw_grid(self, params: dict) -> dict:
@@ -902,6 +904,7 @@ class PerceptionExecutorNode(Node):
             font_min_px=int(cfg["label_font_min_px"]),
             font_max_px=int(cfg["label_font_max_px"]),
             font_path=self._font_path or None, font_index=self._font_index,
+            stroke_width=self._stroke_width, stroke_fill=self._stroke_color,
         )
         result = self._finish_draw(out, cam, source, "visualize_grid", "drew successfully", params)
         result.update(

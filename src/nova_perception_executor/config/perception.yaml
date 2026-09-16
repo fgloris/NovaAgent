@@ -38,7 +38,7 @@ nova_perception_executor:
     label_font_path: ""
     label_font_index: 2           # NotoSansCJK-Regular.ttc 内的 SC 变体
     label_stroke_width: 2
-    label_stroke_color: [0, 0, 0]
+    label_stroke_color: [30, 30, 30]
 
     # ==================== 各工具 ====================
     visualize_frame:
@@ -46,9 +46,9 @@ nova_perception_executor:
       radius: 0.006               # [模型可见]
       labels: true                # [模型可见]
       label_font_px: 32
-      color_x: "red"
-      color_y: "green"
-      color_z: "blue"
+      color_x: [255, 70, 70]
+      color_y: [70, 200, 70]
+      color_z: [70, 70, 255]
 
     visualize_point:
       radius: 0.02                # [模型可见]
@@ -61,24 +61,24 @@ nova_perception_executor:
     visualize_segment:
       radius: 0.006               # [模型可见]
       show_distance: true         # [模型可见]
-      color: [80, 180, 255]       # [模型可见]
+      color: [70, 70, 255]       # [模型可见]
       label_font_px: 32
 
     visualize_ray:
       length: 0.2                 # [模型可见]
       radius: 0.006               # [模型可见]
-      color: "red"                # [模型可见]
+      color: [255, 70, 70]       # [模型可见]
       label_font_px: 32
 
     visualize_pixels:
       radius: 12.0                # [模型可见] 对应模型参数 radius_px
       ring_ratio: 0.25            # 圈线宽 = 半径 × 该比例
-      color: "red"                # [模型可见]
+      color: [255, 70, 70]        # [模型可见]
       label_font_px: 16
 
     visualize_grid:
       grid_size: 8                # [模型可见]
-      label_font_scale: 0.5       # 字号 = 格子短边 × 该比例
+      label_font_scale: 0.2       # 字号 = 格子短边 × 该比例
       label_font_min_px: 11       # 下界
       label_font_max_px: 48       # 上界
       line_color: [200, 200, 200]

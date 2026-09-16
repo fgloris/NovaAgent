@@ -179,9 +179,58 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
   任务落盘 + TaskState 发布
 ```
 
-1. 现在代码内太依赖所谓success状态了.这只是仿真环境的包装
-
 ```
 ros2 action send_goal /nova_perception_executor/visualize_frame/execute nova_interfaces/action/MCPExecute \
 "{tool_name: visualize_frame, params_json: '{\"image\":\"robot0_agentview_right\",\"origin\":[0.2477,-0.0077,0.5845],\"orientation\":[0.6756,0.7265,0.1004,0.0756],\"axis_length\":0.1}', trace_id: dbg}" --feedback
+```
+
+```
+2. visualize_frame
+# 例1:单位姿态,默认轴长/半径/标签
+ros2 action send_goal /nova_perception_executor/visualize_frame/execute nova_interfaces/action/MCPExecute \
+"{tool_name: visualize_frame, params_json: '{\"image\":\"robot0_agentview_left\",\"origin\":[0.40,-0.10,0.35],\"orientation\":[0,0,0,1],\"axis_length\":0.1}', trace_id: dbg}" --feedback
+
+# 例2:带旋转姿态,覆盖半径并关闭标签
+ros2 action send_goal /nova_perception_executor/visualize_frame/execute nova_interfaces/action/MCPExecute \
+"{tool_name: visualize_frame, params_json: '{\"image\":\"robot0_agentview_right\",\"origin\":[0.40,-0.10,0.35],\"orientation\":[0.6756,0.7265,0.1004,0.0756],\"axis_length\":0.15,\"radius\":0.004,\"labels\":false}', trace_id: dbg}" --feedback
+3. visualize_point
+# 例1:默认红色 + 中文标签(标签在点下方)
+ros2 action send_goal /nova_perception_executor/visualize_point/execute nova_interfaces/action/MCPExecute \
+"{tool_name: visualize_point, params_json: '{\"image\":\"robot0_agentview_left\",\"point\":[0.39,-0.13,0.30],\"label\":\"目标点\"}', trace_id: dbg}" --feedback
+
+# 例2:指定颜色/半径
+ros2 action send_goal /nova_perception_executor/visualize_point/execute nova_interfaces/action/MCPExecute \
+"{tool_name: visualize_point, params_json: '{\"image\":\"robot0_agentview_right\",\"point\":[0.39,-0.13,0.30],\"color\":\"cyan\",\"radius\":0.03,\"label\":\"beer\"}', trace_id: dbg}" --feedback
+4. visualize_segment
+# 例1:默认颜色,自动标注距离
+ros2 action send_goal /nova_perception_executor/visualize_segment/execute nova_interfaces/action/MCPExecute \
+"{tool_name: visualize_segment, params_json: '{\"image\":\"robot0_agentview_left\",\"points\":[[0.39,-0.13,0.30],[0.45,-0.05,0.35]]}', trace_id: dbg}" --feedback
+
+# 例2:竖直段 + 颜色/标签
+ros2 action send_goal /nova_perception_executor/visualize_segment/execute nova_interfaces/action/MCPExecute \
+"{tool_name: visualize_segment, params_json: '{\"image\":\"robot0_agentview_right\",\"points\":[[0.39,-0.13,0.30],[0.39,-0.13,0.50]],\"color\":\"yellow\",\"label\":\"高度\",\"show_distance\":true}', trace_id: dbg}" --feedback
+5. visualize_ray
+# 例1:沿 +z,长度 0.2
+ros2 action send_goal /nova_perception_executor/visualize_ray/execute nova_interfaces/action/MCPExecute \
+"{tool_name: visualize_ray, params_json: '{\"image\":\"robot0_agentview_left\",\"origin\":[0.39,-0.13,0.30],\"orientation\":[0,0,0,1],\"length\":0.2}', trace_id: dbg}" --feedback
+
+# 例2:绕 y 转 90°,指定颜色/标签
+ros2 action send_goal /nova_perception_executor/visualize_ray/execute nova_interfaces/action/MCPExecute \
+"{tool_name: visualize_ray, params_json: '{\"image\":\"robot0_agentview_right\",\"origin\":[0.39,-0.13,0.30],\"orientation\":[0.0,0.7071,0.0,0.7071],\"length\":0.15,\"color\":\"magenta\",\"label\":\"朝向\"}', trace_id: dbg}" --feedback
+6. visualize_pixels
+# 例1:数组像素
+ros2 action send_goal /nova_perception_executor/visualize_pixels/execute nova_interfaces/action/MCPExecute \
+"{tool_name: visualize_pixels, params_json: '{\"image\":\"robot0_agentview_left\",\"points\":[[430,300],[300,300]],\"radius_px\":10}', trace_id: dbg}" --feedback
+
+# 例2:字典像素(键即标签)+ 颜色
+ros2 action send_goal /nova_perception_executor/visualize_pixels/execute nova_interfaces/action/MCPExecute \
+"{tool_name: visualize_pixels, params_json: '{\"image\":\"robot0_agentview_right\",\"points\":{\"cup\":[300,300],\"bottle\":[420,250]},\"color\":\"green\",\"radius_px\":14}', trace_id: dbg}" --feedback
+7. visualize_grid
+# 例1:默认 8×8
+ros2 action send_goal /nova_perception_executor/visualize_grid/execute nova_interfaces/action/MCPExecute \
+"{tool_name: visualize_grid, params_json: '{\"image\":\"robot0_agentview_left\"}', trace_id: dbg}" --feedback
+
+# 例2:6×6
+ros2 action send_goal /nova_perception_executor/visualize_grid/execute nova_interfaces/action/MCPExecute \
+"{tool_name: visualize_grid, params_json: '{\"image\":\"robot0_agentview_right\",\"grid_size\":6}', trace_id: dbg}" --feedback
 ```

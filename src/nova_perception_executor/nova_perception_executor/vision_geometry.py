@@ -128,7 +128,8 @@ def _load_grid_font(px, path=None, index=0):
 
 def draw_grid(img, grid_size, line_color=(200, 200, 200), label_color=(0, 200, 0),
               font_scale=_LABEL_FONT_SCALE, font_min_px=_LABEL_MIN_PX,
-              font_max_px=_LABEL_MAX_PX, font_path=None, font_index=0):
+              font_max_px=_LABEL_MAX_PX, font_path=None, font_index=0,
+              stroke_width=0, stroke_fill=(0, 0, 0)):
     """在图像上叠加 grid_size×grid_size 网格线,并在每格中心渲染 "行-列" 编号。
 
     编号字号 = clip(格子短边 × font_scale, font_min_px, font_max_px)。
@@ -150,34 +151,50 @@ def draw_grid(img, grid_size, line_color=(200, 200, 200), label_color=(0, 200, 0
             label = f"{r + 1}-{c + 1}"
             x = int((c + 0.5) * cell_w)
             y = int((r + 0.5) * cell_h)
-            _put_label(out, label, x, y, label_color, font=font)
+            _put_label(out, label, x, y, label_color, font=font,
+                       stroke_width=stroke_width, stroke_fill=stroke_fill)
     return out
 
 
 def draw_marker(img, pixel, color, radius=8, label=None, font_px=None,
-                ring_ratio=0.25, font_path=None, font_index=0):
-    """在像素位置画空心圆圈标记(仅外圈着色),不遮挡圈内物体;可选在圈上方加标签。"""
+                ring_ratio=0.25, font_path=None, font_index=0, supersample=1,
+                stroke_width=0, stroke_fill=(0, 0, 0)):
+    """在像素位置画空心圆圈标记(仅外圈着色),不遮挡圈内物体;可选在圈上方加标签。
+
+    supersample>1 时在放大网格上采样覆盖度再取均值,得到抗锯齿的柔和边缘。
+    """
     out = img.copy()
     u, v = float(pixel[0]), float(pixel[1])
     if not (np.isfinite(u) and np.isfinite(v)):
         return out
     h, w = out.shape[:2]
-    cu = int(round(u))  # u = 横/列
-    cv = int(round(v))  # v = 纵/行
-    cu = int(np.clip(cu, 0, w - 1))
-    cv = int(np.clip(cv, 0, h - 1))
-    rr, cc = np.ogrid[:h, :w]
-    d2 = (rr - cv) ** 2 + (cc - cu) ** 2
-    thick = max(1, int(round(radius * float(ring_ratio))))
-    ring = (d2 <= radius * radius) & (d2 >= (radius - thick) ** 2)
-    out[ring] = color
+    cu = int(np.clip(round(u), 0, w - 1))  # u = 横/列
+    cv = int(np.clip(round(v), 0, h - 1))  # v = 纵/行
+    ss = max(1, int(supersample))
+    radius = max(float(radius), 0.5)
+    thick = max(1.0 / ss, radius * float(ring_ratio))
+    # 只在圆圈外接矩形内做超采样,避免整图开销
+    r_out = radius + 1.0
+    x0, x1 = max(int(np.floor(u - r_out)), 0), min(int(np.ceil(u + r_out)) + 1, w)
+    y0, y1 = max(int(np.floor(v - r_out)), 0), min(int(np.ceil(v + r_out)) + 1, h)
+    if x1 > x0 and y1 > y0:
+        ys = (np.arange(y0 * ss, y1 * ss) + 0.5) / ss
+        xs = (np.arange(x0 * ss, x1 * ss) + 0.5) / ss
+        dist = np.hypot(ys[:, None] - v, xs[None, :] - u)
+        cover = ((dist <= radius) & (dist >= radius - thick)).astype(np.float64)
+        cover = cover.reshape(y1 - y0, ss, x1 - x0, ss).mean(axis=(1, 3))
+        patch = out[y0:y1, x0:x1].astype(np.float64)
+        color_arr = np.asarray(color, dtype=np.float64)
+        blended = patch * (1.0 - cover[..., None]) + color_arr * cover[..., None]
+        out[y0:y1, x0:x1] = np.clip(blended, 0, 255).astype(np.uint8)
     if label:
         font = _load_grid_font(font_px, path=font_path, index=font_index) if font_px else None
-        _put_label(out, label, cu, max(cv - radius - 8, 0), color, font=font)
+        _put_label(out, label, cu, max(int(cv - radius - 8), 0), color, font=font,
+                   stroke_width=stroke_width, stroke_fill=stroke_fill)
     return out
 
 
-def _put_label(img, text, x, y, color, font=None):
+def _put_label(img, text, x, y, color, font=None, stroke_width=0, stroke_fill=(0, 0, 0)):
     """在图像 (x, y) 处居中绘制文本;优先用 PIL,无 PIL 时退化为像素点。"""
     h, w = img.shape[:2]
     try:
@@ -188,7 +205,9 @@ def _put_label(img, text, x, y, color, font=None):
             left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
             x = int(x - (right - left) / 2)
             y = int(y - (bottom - top) / 2)
-            draw.text((x, y), text, fill=tuple(int(c) for c in color), font=font)
+            draw.text((x, y), text, fill=tuple(int(c) for c in color), font=font,
+                      stroke_width=int(stroke_width),
+                      stroke_fill=tuple(int(c) for c in stroke_fill))
         else:
             draw.text((x, y), text, fill=tuple(int(c) for c in color))
         img[:] = np.asarray(pil)
