@@ -13,6 +13,7 @@ from nova_common.tool_result import split_images
 
 from nova_agentos.mcp_adapter import McpAdapter, to_llm_tools
 from nova_agentos.memory import Compactor, ContextBuilder, ImageMemory, SessionManager, TaskMemory
+from nova_agentos.doc_store import DocStore
 from nova_agentos.skill_store import SkillStore
 
 MAX_STEPS_PER_TASK = 20
@@ -41,11 +42,44 @@ LOAD_SKILL_TOOL = {
     "type": "function",
     "function": {
         "name": "load_skill",
-        "description": "加载指定 skill 的领域经验正文",
+        "description": "加载指定 skill 的领域经验正文,可一次传多个(逗号分隔或数组)",
         "parameters": {
             "type": "object",
-            "properties": {"skill": {"type": "string", "description": "skill 名称"}},
+            "properties": {
+                "skill": {
+                    "description": "skill 名称,可传多个(逗号分隔字符串或数组)",
+                    "oneOf": [
+                        {"type": "string"},
+                        {"type": "array", "items": {"type": "string"}},
+                    ],
+                }
+            },
             "required": ["skill"],
+        },
+    },
+}
+
+LOAD_DOC_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "load_doc",
+        "description": (
+            "查看工具的使用说明(doc)。每个工具的 doc 名与其工具名相同;"
+            "需要某工具的详细用法/参数/示例时调用。可一次传多个(逗号分隔或数组),"
+            "例如 load_doc(tool='visualize_frame, visualize_ray')。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tool": {
+                    "description": "工具名,可传多个(逗号分隔字符串或数组)",
+                    "oneOf": [
+                        {"type": "string"},
+                        {"type": "array", "items": {"type": "string"}},
+                    ],
+                }
+            },
+            "required": ["tool"],
         },
     },
 }
@@ -71,7 +105,7 @@ FETCH_HISTORY_TOOL = {
     "type": "function",
     "function": {
         "name": "fetch_history_image",
-        "description": "按时间取某链路最接近的历史图像并注入上下文,返回其描述与 url",
+        "description": "按时间取某链路最接近的历史图像并注入上下文中的processed图像部分,返回其描述与 url",
         "parameters": {
             "type": "object",
             "properties": {
@@ -83,7 +117,7 @@ FETCH_HISTORY_TOOL = {
     },
 }
 
-LOCAL_TOOLS = [LOAD_SKILL_TOOL, LIST_IMAGES_TOOL, FETCH_HISTORY_TOOL]
+LOCAL_TOOLS = [LOAD_SKILL_TOOL, LOAD_DOC_TOOL, LIST_IMAGES_TOOL, FETCH_HISTORY_TOOL]
 
 class TaskRunner:
     """执行单个任务的 ReAct 循环:构造上下文 -> LLM 决策 -> 调工具,直到 finish 或超限。"""
@@ -104,11 +138,13 @@ class TaskRunner:
         frame_provider: Callable[[], dict] | None = None,
         image_history_depth: int = 4,
         image_processed_depth: int = 3,
+        docs: DocStore | None = None,
     ) -> None:
         self.task = task
         self.manager = session_manager
         self.llm = llm
         self.skills = skills
+        self.docs = docs
         self.adapter = adapter
         self.context_builder = context_builder
         self.on_state = on_state
@@ -241,13 +277,36 @@ class TaskRunner:
         except Exception as exc:
             self._finish("failed", f"agent loop 异常: {exc}")
 
+    def _load_many(self, store, raw, kind: str) -> str:
+        """加载一个或多个条目正文;raw 可为逗号分隔字符串或数组。"""
+        names = raw if isinstance(raw, list) else str(raw).split(",")
+        names = [str(name).strip() for name in names if str(name).strip()]
+        if not names:
+            return f"未指定 {kind}"
+        contents = store.load(names)
+        blocks = [f"# {kind}: {name}\n{contents[name]}" for name in names if contents.get(name)]
+        missing = [name for name in names if not contents.get(name)]
+        if missing:
+            blocks.append(f"未找到 {kind}: " + ", ".join(missing))
+        return "\n\n".join(blocks) or f"未找到 {kind}"
+
+    def _load_skills(self, args: dict) -> str:
+        """加载一个或多个 skill 正文。"""
+        return self._load_many(self.skills, args.get("skill", ""), "skill")
+
+    def _load_docs(self, args: dict) -> str:
+        """加载一个或多个工具使用说明(doc)正文。"""
+        if self.docs is None:
+            return "工具说明(doc)未启用"
+        return self._load_many(self.docs, args.get("tool", ""), "doc")
+
     def _run_tool(self, name: str, args: dict) -> tuple[str, dict[str, str]]:
         """执行一次工具调用,返回 (给模型的文本, 待注入的图像 {url: data_url})。"""
         try:
             if name == "load_skill":
-                skill = args.get("skill", "")
-                contents = self.skills.load([skill])
-                return contents.get(skill) or f"未找到 skill: {skill}", {}
+                return self._load_skills(args), {}
+            if name == "load_doc":
+                return self._load_docs(args), {}
             if name == "list_accessible_images":
                 return self._list_accessible_images(args), {}
             if name == "fetch_history_image":
@@ -480,9 +539,11 @@ class AgentLoop:
         frame_provider: Callable[[], dict] | None = None,
         image_history_depth: int = 4,
         image_processed_depth: int = 3,
+        docs: DocStore | None = None,
     ) -> None:
         self.llm = llm
         self.skills = skills
+        self.docs = docs
         self.adapter = adapter
         self.session_manager = session_manager or SessionManager()
         self.on_state = on_state
@@ -564,6 +625,7 @@ class AgentLoop:
                     frame_provider=self.frame_provider,
                     image_history_depth=self.image_history_depth,
                     image_processed_depth=self.image_processed_depth,
+                    docs=self.docs,
                 ).run()
             except Exception as exc:
                 if self.on_state:

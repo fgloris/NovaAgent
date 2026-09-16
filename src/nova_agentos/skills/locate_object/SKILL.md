@@ -4,6 +4,7 @@
 利用多路相机的 2D 像素观测,三角化出物体在机器人 **base 系**下的 3D 坐标 (x, y, z)。
 
 ## 关键约定
+- 各工具的参数/示例等详细用法见同名 doc(如 `load_doc(tool='reproject_pixels')`)。
 - 图像统一用 `file://<kind>/<file>` 引用(见上下文里的 current/processed/history 图像描述)。
   像素坐标就用**该图的实际像素**;`reproject_pixels` 需要同时给出该图的 `size` 作为 `image_size`。
 - 至少需要 **2 个**同时能看到目标的相机。

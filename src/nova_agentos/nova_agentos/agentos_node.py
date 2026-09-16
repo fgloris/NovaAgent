@@ -27,6 +27,7 @@ from nova_agentos.agent_loop import AgentLoop
 from nova_agentos.mcp_adapter import McpAdapter
 from nova_agentos.memory import ImageMemory, ImageSampler, SessionManager
 from nova_agentos.robot_state_observer import RobotStateObserver
+from nova_agentos.doc_store import DocStore
 from nova_agentos.skill_store import SkillStore
 from nova_agentos.vision_observer import VisionObserver
 
@@ -45,6 +46,7 @@ class AgentosNode(Node):
     def __init__(self) -> None:
         super().__init__("nova_agentos")
         self.declare_parameter("skills_dir", "")
+        self.declare_parameter("docs_dir", "")
         self.declare_parameter("list_tools_service", "/nova/executor_manager/list_tools")
         self.declare_parameter("execute_action", "/nova/executor_manager/execute")
         self.declare_parameter("run_task_service", "/nova/agentos/run")
@@ -76,11 +78,15 @@ class AgentosNode(Node):
         self.declare_parameter("image_processed_max", 16)
 
         skills_dir = str(self.get_parameter("skills_dir").value)
-        if not skills_dir:
+        docs_dir = str(self.get_parameter("docs_dir").value)
+        if not skills_dir or not docs_dir:
             from ament_index_python.packages import get_package_share_directory
-            skills_dir = str(Path(get_package_share_directory("nova_agentos")) / "skills")
+            share = Path(get_package_share_directory("nova_agentos"))
+            skills_dir = skills_dir or str(share / "skills")
+            docs_dir = docs_dir or str(share / "docs")
 
         self.skills = SkillStore(skills_dir)
+        self.docs = DocStore(docs_dir)
         api_dir = str(self.get_parameter("api_log_dir").value)
         self.api_logger = ApiLogger(
             enabled=bool(self.get_parameter("api_log_enabled").value),
@@ -142,6 +148,7 @@ class AgentosNode(Node):
             frame_provider=self.vision.latest_frames,
             image_history_depth=self._image_history_depth,
             image_processed_depth=self._image_processed_depth,
+            docs=self.docs,
         )
         self.loop.start()
         self.sampler = ImageSampler(
@@ -161,7 +168,7 @@ class AgentosNode(Node):
         self.create_service(ListSessions, "/nova/agentos/session/list", self._list_sessions_cb)
         self.create_service(RenameSession, "/nova/agentos/session/rename", self._rename_session_cb)
         self.get_logger().info(
-            f"AgentOS 就绪,skill 目录: {skills_dir}, 图像记忆目录: {self._memory_dir}"
+            f"AgentOS 就绪,skill 目录: {skills_dir}, doc 目录: {docs_dir}, 图像记忆目录: {self._memory_dir}"
         )
 
     def _image_memory(self, session_id: str) -> ImageMemory:

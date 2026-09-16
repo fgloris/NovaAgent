@@ -33,6 +33,7 @@ from nova_perception_executor import vision_geometry as vg
 HEARTBEAT_TOPIC = "/nova/executors/heartbeat"
 
 _IMAGE_DESC = "源图:图像记忆的 file://<kind>/<file> 引用(当前/历史/工具返回图均可,可在其基础上继续叠加)"
+_OVERLAY_DESC = "image 可传任意 file:// 图像(current/processed/history 均可),返回可继续叠加的新 processed 图"
 _RADIUS_DESC = "箭头/杆半径(m,base 系投影前固定值,近大远小),默认取节点参数"
 _COLOR_DESC = "颜色:名称(red/green/blue/yellow/cyan/magenta/orange/white)或 [r,g,b](0-255)"
 # 渲染风格(alpha/描边/圆周分段/字号/注入尺寸)只走节点参数/yaml,不暴露给模型
@@ -148,32 +149,39 @@ VISUALIZE_RAY_SCHEMA = {
 TOOLS = {
     "reproject_pixels": (
         "多视图像素重投影:输入各相机上目标的像素坐标(显示分辨率,至少 2 个相机),"
-        "用相机投影矩阵 DLT 三角化出 3D 基座系坐标,并返回各视图的重投影像素与误差。",
+        "用相机投影矩阵 DLT 三角化出 3D 基座系坐标,并返回各视图的重投影像素与误差。"
+        "结果可交给 visualize_point/frame/segment/ray 叠加核对。",
         REPROJECT_SCHEMA,
     ),
     "visualize_frame": (
-        "在图像上叠加一个 3D 坐标系(base 系):origin + orientation(xyzw),"
-        "沿局部 x/y/z 画红/绿/蓝半透明箭头。用于观察夹爪/物体等坐标系的朝向。",
+        "在图像上叠加一个 3D 坐标系:origin + orientation(xyzw),沿局部 x/y/z 画红/绿/蓝半透明箭头,"
+        "用于核对夹爪/物体等朝向。坐标 base 系 xyz(m)、姿态 xyzw;"
+        + _OVERLAY_DESC + "。",
         VISUALIZE_FRAME_SCHEMA,
     ),
     "visualize_point": (
-        "在图像上叠加一个 3D 点(base 系),画成半透明小球并可选标签。",
+        "在图像上叠加一个 3D 点(base 系 xyz,m),画成半透明小球并可选标签,用于标注物体/夹爪位置;"
+        + _OVERLAY_DESC + "。",
         VISUALIZE_POINT_SCHEMA,
     ),
     "visualize_segment": (
-        "在图像上叠加一条 3D 线段(base 系两点),画成半透明圆柱,可标注 3D 距离。",
+        "在图像上叠加一条 3D 线段(base 系两端点 xyz,m),画成半透明圆柱,可标注 3D 距离;"
+        + _OVERLAY_DESC + "。",
         VISUALIZE_SEGMENT_SCHEMA,
     ),
     "visualize_ray": (
-        "在图像上叠加一条 3D 射线/方向(base 系 origin + orientation),画成半透明箭头。",
+        "在图像上叠加一条 3D 射线/方向:origin(xyz,m) + orientation(xyzw,局部 +z 指向该方向),"
+        "画成半透明箭头;" + _OVERLAY_DESC + "。",
         VISUALIZE_RAY_SCHEMA,
     ),
     "visualize_pixels": (
-        "按像素坐标在图像上画空心圆圈(显示分辨率),用于核对物体像素位置;可带文本标签。",
+        "按像素坐标(该图实际分辨率)在图像上画空心圆圈,用于核对物体像素位置;可带文本标签,"
+        "粗定位后可配合 visualize_grid;" + _OVERLAY_DESC + "。",
         VISUALIZE_PIXELS_SCHEMA,
     ),
     "visualize_grid": (
-        "在图像上叠加 grid_size×grid_size 网格并标注 行-列 编号,用于粗定位。",
+        "在图像上叠加 grid_size×grid_size 网格并标注 行-列 编号,用于粗定位;"
+        "再配合 visualize_pixels 画圈核对;" + _OVERLAY_DESC + "。",
         VISUALIZE_GRID_SCHEMA,
     ),
 }
