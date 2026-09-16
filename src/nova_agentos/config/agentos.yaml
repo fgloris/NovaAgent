@@ -1,0 +1,16 @@
+nova_agentos:
+  ros__parameters:
+    # ==================== 图像记忆 ====================
+    # 图像记忆根目录;留空 = $XDG_CACHE_HOME/nova_agentos/memory(默认 ~/.cache/nova_agentos/memory)
+    # 每个 session 一个子目录: <memory_dir>/<session_id>/{current,history,processed}/
+    memory_dir: ""
+    # 各链路(相机)采样周期(秒):每隔该时间把最新帧去重后落盘为历史图
+    image_sample_period_sec: 1.0
+    # 去重阈值:与上一张已存图的归一化 MSE 低于此值则跳过保存(0 = 每帧都存)
+    image_diff_mse_threshold: 0.0005
+    # 注入 context 时每条链路保留的历史图数量
+    image_history_depth: 4
+    # 磁盘上每条链路最多保留的历史图数量(超出删最旧)
+    image_link_max: 60
+    # 磁盘上工具返回图(processed)最多保留数量
+    image_processed_max: 16

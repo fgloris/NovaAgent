@@ -1,9 +1,12 @@
+import io
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
+from PIL import Image
 
-from nova_agentos.agent_loop import AgentLoop
-from nova_agentos.memory import ContextBuilder, SessionManager
+from nova_agentos.agent_loop import AgentLoop, TaskRunner
+from nova_agentos.memory import ContextBuilder, ImageMemory, SessionManager
 
 
 class _Skills:
@@ -107,18 +110,26 @@ class _ToolThenDoneLLM:
         return SimpleNamespace(content="done", reasoning_content="", tool_calls=[])
 
 
-def test_agent_loop_injects_tool_images_as_one_user_message(tmp_path):
+def test_agent_loop_injects_processed_image_into_context(tmp_path):
+    from nova_agentos.memory import ImageMemory
+
     manager = SessionManager(tmp_path)
     session = manager.start()
     task = manager.create_task(session.session_id, "draw the frame")
+    memory = ImageMemory(tmp_path / "memory")
     llm = _ToolThenDoneLLM()
-    loop = AgentLoop(llm, _Skills(), _ImageAdapter(), session_manager=manager)
+    loop = AgentLoop(
+        llm, _Skills(), _ImageAdapter(), session_manager=manager,
+        image_memory_factory=lambda _sid: memory,
+    )
     loop._running = True
     loop.queue.put((task.task_id, session.session_id, task.instruction))
     loop.queue.put(None)
     loop._run()
 
     assert len(llm.messages) >= 2
+    # 工具返回图落盘为 processed,并在下一轮 context 中作为图像段注入
+    assert len(memory.processed_records()) == 1
     second_round = llm.messages[1]
     image_parts = [
         part
@@ -127,7 +138,7 @@ def test_agent_loop_injects_tool_images_as_one_user_message(tmp_path):
         for part in message["content"]
         if isinstance(part, dict) and part.get("type") == "image_url"
     ]
-    assert image_parts, "expected an injected image user message"
+    assert image_parts, "expected a processed image injected into context"
     tool_messages = [m for m in second_round if isinstance(m, dict) and m.get("role") == "tool"]
     assert tool_messages and "data:image" not in tool_messages[0]["content"]
 
@@ -154,3 +165,25 @@ def test_agent_loop_injects_both_observation_providers(tmp_path):
     assert any("VISION_FRAME" in text for text in dumped)
     assert any("ROBOT_STATE_FRAME" in text for text in dumped)
 
+
+
+def _runner_with_memory(tmp_path):
+    memory = ImageMemory(tmp_path)
+    frame = np.zeros((30, 40, 3), dtype=np.uint8)
+    memory.refresh_current({"camA": (frame, 100.0)})
+    memory.save_history("camA", frame, 100.0)
+    buf = io.BytesIO()
+    Image.fromarray(frame).save(buf, format="JPEG")
+    processed = memory.save_processed(buf.getvalue(), "camA", "visualize_grid", {}, "", 101.0)
+    runner = object.__new__(TaskRunner)
+    runner.images = memory
+    runner.image_history_depth = 4
+    return runner, processed
+
+
+def test_local_image_tools_list_and_fetch(tmp_path):
+    runner, processed = _runner_with_memory(tmp_path)
+    listing = runner._list_accessible_images({})
+    assert processed.url in listing and "visualize_grid" in listing
+    text, images = runner._fetch_history_image({"time": 100.0, "topic": "camA"})
+    assert list(images) and "camA" in text

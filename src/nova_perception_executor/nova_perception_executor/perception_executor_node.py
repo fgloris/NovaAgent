@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""nova_perception_executor:感知类 MCP executor。
+"""nova_perception_executor:感知类 MCP executor(无状态、文件驱动)。
 
-常驻订阅 /nova/env/camera/* 滚动缓存最新帧,提供:
+图像由 agentos 的图像记忆统一落盘,工具通过 ``file://<kind>/<file>`` 引用 +
+隐藏参数 ``image_root`` 定位文件;相机/时间等元信息从 JPEG COM 段读取。
+提供:
   - reproject_pixels:多视图像素位置 -> 三角化 3D 点 + 重投影误差;
   - visualize_frame / visualize_point / visualize_segment / visualize_ray:
     在图像上叠加 3D 几何标注(半透明圆柱+圆锥箭头,画家算法渲染);
   - visualize_pixels:按像素坐标在图像上画圈;
   - visualize_grid:在图像上叠加定位网格。
-绘制结果发到绘制话题,并通过 result_json.images 注入 VLM。
+绘制结果发到绘制话题,并通过 result_json.images 返回给 agentos 落盘。
 """
 import copy
 import json
@@ -15,14 +17,11 @@ import time
 
 import numpy as np
 import rclpy
-from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.action import ActionServer, CancelResponse
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
-from std_msgs.msg import String
 
 from nova_common import image_codec
 from nova_interfaces.action import MCPExecute
@@ -33,13 +32,11 @@ from nova_perception_executor import vision_geometry as vg
 
 HEARTBEAT_TOPIC = "/nova/executors/heartbeat"
 
-DEFAULT_CAMERAS = ["robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand"]
-
-_IMAGE_DESC = "源图:相机名(用该相机最新帧)或之前绘制工具返回的 image_id(可在其基础上继续叠加)"
+_IMAGE_DESC = "源图:图像记忆的 file://<kind>/<file> 引用(当前/历史/工具返回图均可,可在其基础上继续叠加)"
 _RADIUS_DESC = "箭头/杆半径(m,base 系投影前固定值,近大远小),默认取节点参数"
 _COLOR_DESC = "颜色:名称(red/green/blue/yellow/cyan/magenta/orange/white)或 [r,g,b](0-255)"
 # 渲染风格(alpha/描边/圆周分段/字号/注入尺寸)只走节点参数/yaml,不暴露给模型
-# 像素坐标一律用 VLM 看到的显示分辨率;工具内部自动换算到原始分辨率。
+# 像素坐标一律用图像记忆里该图的真实像素;相机等元信息从 JPEG COM 段读取。
 
 REPROJECT_SCHEMA = {
     "type": "object",
@@ -51,11 +48,11 @@ REPROJECT_SCHEMA = {
         },
         "image_size": {
             "type": "object",
-            "description": "可选:覆盖各相机像素坐标所属的显示分辨率 {相机名: [w, h]};不传则自动推断",
+            "description": "各相机像素坐标所属的图像分辨率 {相机名: [w, h]}(取自图像描述里的 size)",
             "additionalProperties": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
         },
     },
-    "required": ["points"],
+    "required": ["points", "image_size"],
 }
 
 VISUALIZE_PIXELS_SCHEMA = {
@@ -225,11 +222,6 @@ _COLORS = {
 }
 
 
-def _image_to_numpy(msg: Image) -> np.ndarray:
-    """把 ROS Image(rgb8)消息转成 HxWx3 的 uint8 numpy 数组。"""
-    return np.frombuffer(msg.data, dtype=np.uint8).reshape((msg.height, msg.width, 3))
-
-
 def _vec3(value, name: str) -> np.ndarray:
     """校验并返回 3 维向量。"""
     arr = np.asarray(value, dtype=float).reshape(-1)
@@ -273,15 +265,9 @@ class PerceptionExecutorNode(Node):
     def __init__(self) -> None:
         super().__init__("nova_perception_executor")
         # ---------- 环境/发现 ----------
-        self.declare_parameter("camera_names", DEFAULT_CAMERAS)
-        self.declare_parameter("image_topics", [], ParameterDescriptor(dynamic_typing=True))
         self.declare_parameter("env_ns", "/nova/env")
         self.declare_parameter("heartbeat_rate_hz", 1.0)
-        self.declare_parameter("display_max_size", image_codec.DEFAULT_MAX_IMAGE_SIZE)
         self.declare_parameter("draw_topic", "/nova/perception/draw")
-        self.declare_parameter("image_cache_size", 20)
-        self.declare_parameter("camera_qos_depth", 1)
-        self.declare_parameter("camera_qos_reliable", False)
 
         # ---------- 渲染(公用) ----------
         self.declare_parameter("draw_alpha", 0.45)
@@ -340,21 +326,8 @@ class PerceptionExecutorNode(Node):
         self.declare_parameter("visualize_grid.label_color", [0, 200, 0])
 
         rate = float(self.get_parameter("heartbeat_rate_hz").value)
-        self.camera_names = list(self.get_parameter("camera_names").value)
         self.env_ns = str(self.get_parameter("env_ns").value).rstrip("/")
-        topics = list(self.get_parameter("image_topics").value or [])
-        if topics:
-            if len(topics) != len(self.camera_names):
-                raise RuntimeError(
-                    f"image_topics({len(topics)}) 与 camera_names({len(self.camera_names)}) 数量不一致"
-                )
-            self.image_topics = dict(zip(self.camera_names, topics))
-        else:
-            self.image_topics = {
-                cam: f"{self.env_ns}/camera/{cam}/image_raw" for cam in self.camera_names
-            }
         self.env_info_srv = f"{self.env_ns}/info"
-        self._display_max_size = int(self.get_parameter("display_max_size").value)
 
         self._draw_topic = str(self.get_parameter("draw_topic").value)
         self._alpha = float(self.get_parameter("draw_alpha").value)
@@ -366,13 +339,6 @@ class PerceptionExecutorNode(Node):
         self._shade_min = float(self.get_parameter("draw_shade_min").value)
         self._inject_image_max_size = int(self.get_parameter("inject_image_max_size").value)
         self._segments = int(self.get_parameter("segments").value)
-        self._image_cache_size = max(1, int(self.get_parameter("image_cache_size").value))
-        self._cam_qos = QoSProfile(
-            depth=max(1, int(self.get_parameter("camera_qos_depth").value)),
-            reliability=ReliabilityPolicy.RELIABLE
-            if bool(self.get_parameter("camera_qos_reliable").value)
-            else ReliabilityPolicy.BEST_EFFORT,
-        )
 
         self._common_font_px = int(self.get_parameter("label_font_px").value)
         self._font_path = str(self.get_parameter("label_font_path").value).strip()
@@ -407,17 +373,6 @@ class PerceptionExecutorNode(Node):
             for tool, params in MODEL_PARAM_DEFAULTS.items()
         }
 
-        self._frames: dict[str, np.ndarray] = {}
-        self._camera_subs: set[str] = set()
-        for cam, topic in self.image_topics.items():
-            self._camera_subs.add(cam)
-            self.create_subscription(Image, topic, self._make_cam_cb(cam), self._cam_qos)
-        # 自动发现 /nova/env/obs 里声明的全部相机(含腕部相机等),便于在任意相机上绘制
-        self.create_subscription(String, f"{self.env_ns}/obs", self._obs_cb, 10)
-
-        self._image_cache: dict[str, dict] = {}
-        self._image_counter = 0
-
         self._info_cg = MutuallyExclusiveCallbackGroup()
         self._info_client = self.create_client(
             EnvInfo, self.env_info_srv, callback_group=self._info_cg
@@ -441,8 +396,7 @@ class PerceptionExecutorNode(Node):
         self.create_timer(1.0 / max(rate, 0.1), self._publish_heartbeat)
         self._publish_heartbeat()
         self.get_logger().info(
-            f"感知 executor 就绪,相机={self.camera_names}, 工具={list(TOOLS)}, "
-            f"绘制话题={self._draw_topic}"
+            f"感知 executor 就绪,工具={list(TOOLS)}, 绘制话题={self._draw_topic}"
         )
 
     def _read_tool(self, prefix: str, keys: tuple[str, ...]) -> dict:
@@ -484,34 +438,6 @@ class PerceptionExecutorNode(Node):
             tool.action_server_name = f"/{self.get_name()}/{name}/execute"
             hb.tools.append(tool)
         self._heartbeat_pub.publish(hb)
-
-    def _make_cam_cb(self, cam: str):
-        """为指定相机生成订阅回调,滚动缓存最新一帧。"""
-        def cb(msg):
-            self._frames[cam] = _image_to_numpy(msg)
-
-        return cb
-
-    def _obs_cb(self, msg: String) -> None:
-        """从 /nova/env/obs 的 cameras 键发现新相机并补订阅。"""
-        try:
-            doc = json.loads(msg.data) if msg.data else {}
-        except Exception:
-            return
-        cameras = doc.get("cameras")
-        if isinstance(cameras, dict):
-            for name in cameras:
-                self._ensure_camera_sub(str(name))
-
-    def _ensure_camera_sub(self, cam: str) -> None:
-        """为尚未订阅的相机创建 {env_ns}/camera/{cam}/image_raw 订阅。"""
-        cam = str(cam).strip()
-        if not cam or cam in self._camera_subs:
-            return
-        self._camera_subs.add(cam)
-        topic = f"{self.env_ns}/camera/{cam}/image_raw"
-        self.create_subscription(Image, topic, self._make_cam_cb(cam), self._cam_qos)
-        self.get_logger().info(f"新增相机订阅: {topic}")
 
     # ---------- /nova/env/info ----------
 
@@ -568,7 +494,9 @@ class PerceptionExecutorNode(Node):
                 result.result_json = json.dumps(result_json, ensure_ascii=False)
                 result.error = ""
                 goal_handle.succeed()
-                self.get_logger().info(f"{name} 完成: {result_json.get('image_id') or result_json.get('position')}")
+                self.get_logger().info(
+                    f"{name} 完成: {result_json.get('camera') or result_json.get('position')}"
+                )
                 return result
             except Exception as exc:
                 result = MCPExecute.Result()
@@ -599,45 +527,47 @@ class PerceptionExecutorNode(Node):
             return self._draw_grid(params)
         raise ValueError(f"未知工具: {name}")
 
-    # ---------- 图像源与缓存 ----------
+    # ---------- 图像源(无状态,文件驱动) ----------
 
-    def _resolve_image(self, source: str):
-        """把相机名或 image_id 解析为 (图像, 相机名, K, P, 源标识)。"""
-        source = str(source)
+    def _resolve_image(self, params: dict):
+        """把 ``file://`` 引用解析为 (图像, 相机名, 缩放到该图的 K, P, 源标识)。
+
+        图像路径 = ``image_root``(agentos 注入的隐藏参数) + ``file://<kind>/<file>``;
+        相机/时间等元信息从 JPEG COM 段读取,并按图像尺寸缩放内参。
+        """
+        source = str(params.get("image") or "")
+        root = params.get("image_root")
+        if not source:
+            raise ValueError("缺少 image 参数")
+        if not root:
+            raise ValueError("缺少 image_root 参数(应由 agentos 注入)")
         projections = self._fetch_projections()
         if not projections:
             raise RuntimeError("env info 未提供相机投影矩阵")
-        if source in self._frames:
-            cam = source
-            image = self._frames[cam]
-        elif source in self._camera_subs:
-            # 已订阅但还没收到帧:短暂等待,避免节点刚启动时的竞态
-            deadline = time.time() + 3.0
-            while source not in self._frames and time.time() < deadline:
-                time.sleep(0.05)
-            if source not in self._frames:
-                raise RuntimeError(f"相机 {source} 已订阅但尚未收到帧")
-            cam = source
-            image = self._frames[cam]
-        elif source in self._image_cache:
-            entry = self._image_cache[source]
-            cam = entry["camera"]
-            image = entry["image"]
-        else:
-            raise RuntimeError(
-                f"未知图像源 {source!r};可用相机={list(self._frames)} 或 image_id={list(self._image_cache)}"
-            )
+        path = image_codec.resolve_image_path(source, root)
+        if not path.exists():
+            raise RuntimeError(f"图像不存在或已失效: {source}")
+        metadata = image_codec.read_jpeg_metadata(path)
+        cam = str(metadata.get("camera", "") or "")
+        if not cam:
+            raise RuntimeError(f"图像缺少相机元信息: {source}")
+        image = image_codec.load_image(source, root)
         K, P = self._camera_calibration(cam, projections)
+        K, P = self._scale_calibration(K, P, int(image.shape[1]), int(image.shape[0]))
         return image, cam, K, P, source
 
-    def _store_image(self, image: np.ndarray, camera: str, source: str) -> str:
-        """缓存绘制结果并返回新的 image_id(LRU 上限)。"""
-        self._image_counter += 1
-        image_id = f"viz_{self._image_counter}"
-        self._image_cache[image_id] = {"image": image, "camera": camera, "source": source}
-        while len(self._image_cache) > self._image_cache_size:
-            self._image_cache.pop(next(iter(self._image_cache)), None)
-        return image_id
+    @staticmethod
+    def _scale_calibration(K, P, width: int, height: int):
+        """把相机原生分辨率下的 (K, P) 缩放到图像实际尺寸。
+
+        env info 的内参主点在图像中心(cx=w/2, cy=h/2),据此反推原生分辨率。
+        """
+        native_w = 2.0 * float(K[0, 2])
+        native_h = 2.0 * float(K[1, 2])
+        if native_w <= 0 or native_h <= 0:
+            return K, P
+        scale = np.diag([width / native_w, height / native_h, 1.0])
+        return scale @ K, scale @ P
 
     def _render(self, image, K, P, verts, faces, colors, params: dict) -> np.ndarray:
         """按节点默认/工具参数渲染网格(alpha、描边、光照可逐次覆盖)。"""
@@ -678,28 +608,25 @@ class PerceptionExecutorNode(Node):
         return "drew successfully" if not warnings else "warning: " + "; ".join(warnings)
 
     def _finish_draw(self, image, camera, source, tool, status, params=None) -> dict:
-        """缓存并发布绘制结果,返回给模型的文本状态与待注入图像。"""
-        image_id = self._store_image(image, camera, source)
-        frame_id = f"{source}|{image_id}"
-        self._draw_pub.publish(self._numpy_to_image_msg(image, frame_id))
+        """发布绘制结果,返回给模型的文本状态与待 agentos 落盘的图像(data URL)。"""
+        self._draw_pub.publish(self._numpy_to_image_msg(image, camera))
         return {
             "ok": True,
             "tool": tool,
             "status": status,
-            "image_id": image_id,
             "source": source,
             "camera": camera,
             "width": int(image.shape[1]),
             "height": int(image.shape[0]),
             "topic": self._draw_topic,
-            "images": {image_id: self._encode_for_vlm(image, params or {})},
+            "images": [self._encode_for_vlm(image, params or {})],
         }
 
     # ---------- 各可视化工具 ----------
 
     def _draw_frame(self, params: dict) -> dict:
         """绘制一个 base 系坐标系(x/y/z 三色箭头)。"""
-        image, cam, K, P, source = self._resolve_image(params["image"])
+        image, cam, K, P, source = self._resolve_image(params)
         cfg = self._frame
         origin = _vec3(params.get("origin"), "origin")
         orientation = _vec4(params.get("orientation"), "orientation")
@@ -725,7 +652,7 @@ class PerceptionExecutorNode(Node):
 
     def _draw_point(self, params: dict) -> dict:
         """绘制一个 base 系 3D 点(小球);标签渲染在点正下方,避免遮挡。"""
-        image, cam, K, P, source = self._resolve_image(params["image"])
+        image, cam, K, P, source = self._resolve_image(params)
         cfg = self._point
         point = _vec3(params.get("point"), "point")
         radius = float(params.get("radius", cfg["radius"]))
@@ -751,7 +678,7 @@ class PerceptionExecutorNode(Node):
 
     def _draw_segment(self, params: dict) -> dict:
         """绘制一条 base 系 3D 线段(圆柱),可标注 3D 距离。"""
-        image, cam, K, P, source = self._resolve_image(params["image"])
+        image, cam, K, P, source = self._resolve_image(params)
         cfg = self._segment
         points = params.get("points")
         if not isinstance(points, list) or len(points) != 2:
@@ -780,7 +707,7 @@ class PerceptionExecutorNode(Node):
 
     def _draw_ray(self, params: dict) -> dict:
         """绘制一条 base 系 3D 射线(沿四元数局部 +z 的箭头)。"""
-        image, cam, K, P, source = self._resolve_image(params["image"])
+        image, cam, K, P, source = self._resolve_image(params)
         cfg = self._ray
         origin = _vec3(params.get("origin"), "origin")
         orientation = _vec4(params.get("orientation"), "orientation")
@@ -805,48 +732,41 @@ class PerceptionExecutorNode(Node):
 
     # ---------- 像素工具 ----------
 
-    def _display_wh(self, source: str, native_wh: tuple[int, int], override=None) -> tuple[int, int]:
-        """返回像素坐标所属的显示分辨率:优先 override,否则按来源推断。"""
-        if override:
-            return int(override[0]), int(override[1])
-        if source in self._image_cache:
-            max_size = self._inject_image_max_size or max(native_wh)
-        else:
-            max_size = self._display_max_size
-        return image_codec.display_size(native_wh[0], native_wh[1], max_size)
-
     def _reproject_pixels(self, params: dict) -> dict:
-        """多视图像素 -> 三角化 3D 点 + 重投影误差;输入/输出都用显示分辨率。"""
+        """多视图像素 -> 三角化 3D 点 + 重投影误差;像素坐标用各图实际分辨率(image_size)。"""
         points = params.get("points")
         if not isinstance(points, dict) or len(points) < 2:
             raise ValueError("points 必须是至少 2 个相机的 {相机名:[u,v]}")
+        sizes = params.get("image_size")
+        if not isinstance(sizes, dict) or not sizes:
+            raise ValueError("必须提供 image_size {相机名:[w,h]}")
         projections = self._fetch_projections()
         if not projections:
             raise RuntimeError("env info 未提供相机投影矩阵")
-        sizes = params.get("image_size") or {}
 
         cams = list(points.keys())
-        native_pts, native_projs, display_sizes, native_sizes = [], [], {}, {}
+        pts, projs, used_sizes = [], [], {}
         for cam in cams:
-            if cam not in self._frames:
-                raise RuntimeError(f"相机 {cam} 未收到帧")
-            native_wh = (self._frames[cam].shape[1], self._frames[cam].shape[0])
-            display_wh = self._display_wh(cam, native_wh, sizes.get(cam))
-            _, P = self._camera_calibration(cam, projections)
-            native_pts.append(image_codec.convert_points(list(points[cam]), display_wh, native_wh))
-            native_projs.append(P)
-            display_sizes[cam] = display_wh
-            native_sizes[cam] = native_wh
+            size = sizes.get(cam)
+            if not (isinstance(size, (list, tuple)) and len(size) == 2):
+                raise ValueError(f"缺少相机 {cam} 的 image_size")
+            width, height = int(size[0]), int(size[1])
+            uv = points[cam]
+            if not (isinstance(uv, (list, tuple)) and len(uv) == 2):
+                raise ValueError(f"相机 {cam} 的像素必须是 [u, v]")
+            K, P = self._camera_calibration(cam, projections)
+            _, P = self._scale_calibration(K, P, width, height)
+            pts.append([float(uv[0]), float(uv[1])])
+            projs.append(P)
+            used_sizes[cam] = [width, height]
 
-        position = vg.triangulate(native_pts, native_projs)
-        errors_native = vg.reprojection_errors(native_pts, native_projs, position)
+        position = vg.triangulate(pts, projs)
+        errors_native = vg.reprojection_errors(pts, projs, position)
         reprojected, errors = {}, {}
-        for cam, P, err in zip(cams, native_projs, errors_native):
-            native_wh = native_sizes[cam]
-            display_wh = display_sizes[cam]
+        for cam, P, err in zip(cams, projs, errors_native):
             uu, vv = vg.project_point(P, position)
-            reprojected[cam] = image_codec.convert_points([uu, vv], native_wh, display_wh)
-            errors[cam] = round(float(err) * (display_wh[0] / native_wh[0]), 3)
+            reprojected[cam] = [round(float(uu), 2), round(float(vv), 2)]
+            errors[cam] = round(float(err), 3)
         mean_error = sum(errors.values()) / len(errors)
         return {
             "ok": True,
@@ -854,15 +774,13 @@ class PerceptionExecutorNode(Node):
             "reprojected": reprojected,
             "errors_px": errors,
             "mean_error_px": round(mean_error, 3),
-            "display_size": {cam: list(display_sizes[cam]) for cam in cams},
-            "native_size": {cam: list(native_sizes[cam]) for cam in cams},
+            "image_size": used_sizes,
         }
 
     def _draw_pixels(self, params: dict) -> dict:
-        """按像素坐标在图像上画空心圆圈(输入显示分辨率,内部换算到原始分辨率)。"""
-        image, cam, K, P, source = self._resolve_image(params["image"])
-        native_wh = (image.shape[1], image.shape[0])
-        display_wh = self._display_wh(source, native_wh, params.get("image_size"))
+        """按像素坐标在图像上画空心圆圈(坐标为图像实际像素)。"""
+        image, cam, _K, _P, source = self._resolve_image(params)
+        width, height = int(image.shape[1]), int(image.shape[0])
         raw = params.get("points")
         if isinstance(raw, dict):
             labeled = [(str(key), value) for key, value in raw.items()]
@@ -871,7 +789,7 @@ class PerceptionExecutorNode(Node):
         else:
             raise ValueError("points 必须是 [[u,v],...] 或 {label:[u,v]}")
         cfg = self._pixels
-        radius_native = float(params.get("radius_px", cfg["radius"])) * (native_wh[0] / display_wh[0])
+        radius = float(params.get("radius_px", cfg["radius"]))
         color = _parse_color(params.get("color"), cfg["color"])
         font_px = self._font_px(cfg["label_font_px"])
         out = image
@@ -879,10 +797,9 @@ class PerceptionExecutorNode(Node):
         for label, uv in labeled:
             if not isinstance(uv, (list, tuple)) or len(uv) != 2:
                 raise ValueError("每个点必须是 [u, v]")
-            if not (0 <= float(uv[0]) < display_wh[0] and 0 <= float(uv[1]) < display_wh[1]):
+            if not (0 <= float(uv[0]) < width and 0 <= float(uv[1]) < height):
                 warnings.append(f"点 {label or uv} 超出画面")
-            native_px = image_codec.convert_points(list(uv), display_wh, native_wh)
-            out = vg.draw_marker(out, native_px, color, radius=radius_native, label=label,
+            out = vg.draw_marker(out, [float(uv[0]), float(uv[1])], color, radius=radius, label=label,
                                  font_px=font_px, ring_ratio=float(cfg["ring_ratio"]),
                                  font_path=self._font_path or None, font_index=self._font_index,
                                  supersample=self._supersample,
@@ -890,11 +807,10 @@ class PerceptionExecutorNode(Node):
         return self._finish_draw(out, cam, source, "visualize_pixels", self._status(warnings), params)
 
     def _draw_grid(self, params: dict) -> dict:
-        """在图像上叠加 grid_size×grid_size 网格并返回显示分辨率下的格子尺寸。"""
-        image, cam, K, P, source = self._resolve_image(params["image"])
+        """在图像上叠加 grid_size×grid_size 网格并返回格子像素尺寸。"""
+        image, cam, _K, _P, source = self._resolve_image(params)
         cfg = self._grid
-        native_wh = (image.shape[1], image.shape[0])
-        display_wh = self._display_wh(source, native_wh, params.get("image_size"))
+        width, height = int(image.shape[1]), int(image.shape[0])
         grid_size = max(2, int(params.get("grid_size", cfg["grid_size"])))
         out = vg.draw_grid(
             image, grid_size,
@@ -910,8 +826,8 @@ class PerceptionExecutorNode(Node):
         result.update(
             {
                 "grid_size": grid_size,
-                "display_size": list(display_wh),
-                "cell_px": [display_wh[0] / grid_size, display_wh[1] / grid_size],
+                "image_size": [width, height],
+                "cell_px": [width / grid_size, height / grid_size],
             }
         )
         return result

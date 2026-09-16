@@ -1,4 +1,28 @@
+import numpy as np
+
 from nova_common import image_codec
+
+
+def test_jpeg_metadata_and_file_url_roundtrip(tmp_path):
+    frame = np.zeros((30, 40, 3), dtype=np.uint8)
+    frame[..., 1] = 180
+    path = tmp_path / "history" / "1-camA.jpg"
+    image_codec.save_image_with_metadata(path, frame, {"camera": "camA", "origin": "raw_camera"})
+    assert image_codec.read_jpeg_metadata(path)["camera"] == "camA"
+    url = image_codec.image_url("history", "1-camA.jpg")
+    assert url == "file://history/1-camA.jpg"
+    loaded = image_codec.load_image(url, tmp_path)
+    assert loaded.shape == frame.shape
+    assert np.abs(loaded.astype(int) - frame.astype(int)).mean() < 5  # JPEG 有损
+    assert image_codec.resolve_image_path(url, tmp_path) == path
+
+
+def test_resolve_image_path_rejects_escape(tmp_path):
+    try:
+        image_codec.resolve_image_path("file://../secret.jpg", tmp_path)
+        assert False
+    except ValueError:
+        pass
 
 
 def test_display_size_only_shrinks():

@@ -1,7 +1,6 @@
 import numpy as np
 import pytest
 
-from nova_common import image_codec
 from nova_perception_executor import vision_geometry as vg
 from nova_perception_executor.perception_executor_node import (
     MODEL_PARAM_DEFAULTS,
@@ -56,13 +55,6 @@ def test_parse_color_name_list_and_fallback():
 
 def _bare_node():
     node = PerceptionExecutorNode.__new__(PerceptionExecutorNode)
-    node._display_max_size = 100
-    node._inject_image_max_size = 0
-    node._image_cache = {}
-    node._frames = {
-        "camA": np.zeros((200, 200, 3), dtype=np.uint8),
-        "camB": np.zeros((200, 200, 3), dtype=np.uint8),
-    }
     K = np.array([[200.0, 0.0, 100.0], [0.0, 200.0, 100.0], [0.0, 0.0, 1.0]])
     PA = K @ np.hstack([np.eye(3), np.zeros((3, 1))])
     PB = K @ np.hstack([np.eye(3), np.array([[0.2], [0.0], [0.0]])])
@@ -92,9 +84,6 @@ def _point_node():
     node._light_dir = [0.3, -0.5, 1.0]
     node._shade_min = 0.5
     node._inject_image_max_size = 0
-    node._image_cache = {}
-    node._image_counter = 0
-    node._image_cache_size = 20
     node._draw_topic = "/nova/perception/draw"
     node._font_path = ""
     node._font_index = 2
@@ -111,7 +100,9 @@ def _point_node():
     node._draw_pub = _Pub()
     K = np.array([[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]])
     P = K @ np.hstack([np.eye(3), np.array([[0.0], [0.0], [1.0]])])
-    node._resolve_image = lambda src: (np.zeros((480, 640, 3), dtype=np.uint8), "cam", K, P, src)
+    node._resolve_image = lambda params: (
+        np.zeros((480, 640, 3), dtype=np.uint8), "cam", K, P, params["image"]
+    )
     return node
 
 
@@ -120,7 +111,7 @@ def test_draw_point_accepts_named_default_color():
     node = _point_node()
     out = node._draw_point({"image": "cam", "point": [0.0, 0.0, 0.0], "label": "目标点"})
     assert out["ok"] is True
-    assert out["image_id"].startswith("viz_")
+    assert isinstance(out["images"], list) and out["images"][0].startswith("data:image")
 
 
 def test_tool_schema_injects_model_defaults_without_mutating_tools():
@@ -147,15 +138,16 @@ def test_model_param_defaults_cover_schema_properties():
             assert param in properties, f"{tool}.{param} 不在 schema 中"
 
 
-def test_reproject_pixels_recovers_point_across_display_native():
+def test_reproject_pixels_recovers_point_at_half_resolution():
     node, projections = _bare_node()
     point = np.array([0.05, -0.03, 0.5])
-    display_points = {}
+    points, image_size = {}, {}
     for cam, P in projections.items():
-        u, v = vg.project_point(P, point)  # 原始分辨率像素
-        display_points[cam] = image_codec.convert_points([u, v], (200, 200), (100, 100))
+        u, v = vg.project_point(P, point)  # 原始分辨率(200x200)像素
+        points[cam] = [u * 0.5, v * 0.5]   # 缩到 100x100
+        image_size[cam] = [100, 100]
 
-    out = node._reproject_pixels({"points": display_points})
+    out = node._reproject_pixels({"points": points, "image_size": image_size})
     assert np.allclose(out["position"], point, atol=1e-3)
-    assert out["display_size"]["camA"] == [100, 100]
+    assert out["image_size"]["camA"] == [100, 100]
     assert max(out["errors_px"].values()) < 1e-3

@@ -4,13 +4,15 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import time
 from typing import Callable
 
+from nova_common import image_codec
 from nova_common.llm_client import LLMClient
 from nova_common.tool_result import split_images
 
 from nova_agentos.mcp_adapter import McpAdapter, to_llm_tools
-from nova_agentos.memory import Compactor, ContextBuilder, SessionManager, TaskMemory
+from nova_agentos.memory import Compactor, ContextBuilder, ImageMemory, SessionManager, TaskMemory
 from nova_agentos.skill_store import SkillStore
 
 MAX_STEPS_PER_TASK = 20
@@ -48,6 +50,41 @@ LOAD_SKILL_TOOL = {
     },
 }
 
+LIST_IMAGES_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "list_accessible_images",
+        "description": "列出可访问的图像:所有工具返回图 + 每链路最近 N 张历史图,含 url/时间/相机/来源描述",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "history_depth": {
+                    "type": "integer",
+                    "description": "每条链路返回的历史图数量,默认取配置",
+                }
+            },
+        },
+    },
+}
+
+FETCH_HISTORY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "fetch_history_image",
+        "description": "按时间取某链路最接近的历史图像并注入上下文,返回其描述与 url",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "time": {"type": "number", "description": "目标时间(epoch 秒)"},
+                "topic": {"type": "string", "description": "相机/链路名"},
+            },
+            "required": ["time", "topic"],
+        },
+    },
+}
+
+LOCAL_TOOLS = [LOAD_SKILL_TOOL, LIST_IMAGES_TOOL, FETCH_HISTORY_TOOL]
+
 class TaskRunner:
     """执行单个任务的 ReAct 循环:构造上下文 -> LLM 决策 -> 调工具,直到 finish 或超限。"""
 
@@ -63,6 +100,9 @@ class TaskRunner:
         observation_provider: Callable[[], dict | None] | None,
         robot_context_provider: Callable[[], dict | None] | None = None,
         robot_state_provider: Callable[[], dict | None] | None = None,
+        image_memory: ImageMemory | None = None,
+        frame_provider: Callable[[], dict] | None = None,
+        image_history_depth: int = 4,
     ) -> None:
         self.task = task
         self.manager = session_manager
@@ -74,6 +114,9 @@ class TaskRunner:
         self.observation_provider = observation_provider
         self.robot_context_provider = robot_context_provider
         self.robot_state_provider = robot_state_provider
+        self.images = image_memory
+        self.frame_provider = frame_provider
+        self.image_history_depth = max(1, int(image_history_depth))
         self.runtime_messages: list[dict] = []
 
     def run(self) -> None:
@@ -81,7 +124,7 @@ class TaskRunner:
         self._event("status", "working", f"收到指令: {self.task.instruction}")
         try:
             descriptors = self.adapter.fetch_tools()
-            tools = [LOAD_SKILL_TOOL, FINISH_TOOL] + to_llm_tools(descriptors)
+            tools = LOCAL_TOOLS + [FINISH_TOOL] + to_llm_tools(descriptors)
             fails = 0
             for round_no in range(1, MAX_STEPS_PER_TASK + 1):
                 # 构造上下文： 会话 = 工具 + 先前任务上下文 + 系统提示 + Runtime Message
@@ -100,6 +143,11 @@ class TaskRunner:
                     robot_context=self.robot_context_provider() if self.robot_context_provider else None,
                 )
                 messages.extend(self.runtime_messages)
+                # 动态图像段(current -> processed -> history)与时间戳放在最末,保留稳定前缀
+                image_parts = self._image_context()
+                if image_parts:
+                    messages.append({"role": "user", "content": image_parts})
+                messages.append(self._timestamp_message())
                 self.manager.save_context(self.task.session_id, session.context)
                 result = self.llm.chat(
                     messages,
@@ -192,12 +240,18 @@ class TaskRunner:
             self._finish("failed", f"agent loop 异常: {exc}")
 
     def _run_tool(self, name: str, args: dict) -> tuple[str, dict[str, str]]:
-        """执行一次工具调用,返回 (给模型的文本, 待注入的图像 {id: data_url})。"""
+        """执行一次工具调用,返回 (给模型的文本, 待注入的图像 {url: data_url})。"""
         try:
             if name == "load_skill":
                 skill = args.get("skill", "")
                 contents = self.skills.load([skill])
                 return contents.get(skill) or f"未找到 skill: {skill}", {}
+            if name == "list_accessible_images":
+                return self._list_accessible_images(args), {}
+            if name == "fetch_history_image":
+                return self._fetch_history_image(args)
+
+            call_args = self._prepare_executor_args(args)
 
             def feedback(status: str, message: str) -> None:
                 self.task.add_event(
@@ -208,15 +262,122 @@ class TaskRunner:
 
             result = self.adapter.execute(
                 name,
-                args,
+                call_args,
                 trace_id=self.task.task_id,
                 timeout_sec=300.0,
                 feedback_callback=feedback,
             )
             stripped, images = split_images(result)
-            return json.dumps(stripped, ensure_ascii=False), images
+            if self.images is not None and images:
+                stripped["images"] = self._store_processed(name, call_args, stripped, images)
+            return json.dumps(stripped, ensure_ascii=False), {}
         except Exception as exc:
             return f"工具执行失败: {exc}", {}
+
+    # ---------- 图像记忆 ----------
+
+    def _prepare_executor_args(self, args: dict) -> dict:
+        """给 perception 调用注入隐藏 image_root,并把相机名/别名解析成 file:// 引用。"""
+        if self.images is None or "image" not in args:
+            return args
+        call_args = dict(args)
+        call_args["image"] = self._resolve_image_arg(args.get("image"))
+        call_args["image_root"] = str(self.images.root)
+        return call_args
+
+    def _resolve_image_arg(self, value) -> str:
+        """把 image 参数解析为可用的 file:// 引用:优先按已有记录,其次按相机名映射最新 current 图。"""
+        text = str(value)
+        record = self.images.find(text)
+        if record is not None:
+            return record.url
+        for current in self.images.current_records():
+            if current.camera == text:
+                return current.url
+        return text
+
+    def _store_processed(self, tool: str, call_args: dict, stripped: dict, images: dict) -> list[dict]:
+        """把工具返回的 data URL 图落盘为 processed,返回给模型看的描述列表。"""
+        camera = str(stripped.get("camera", "") or "")
+        base_url = str(call_args.get("image", "") or "")
+        params = {k: v for k, v in call_args.items() if k not in {"image", "image_root"}}
+        now = time.time()
+        described: list[dict] = []
+        for url in images.values():
+            try:
+                data = image_codec.data_url_to_bytes(url)
+            except Exception:
+                continue
+            record = self.images.save_processed(data, camera, tool, params, base_url, now)
+            described.append(record.describe())
+        return described
+
+    def _list_accessible_images(self, args: dict) -> str:
+        if self.images is None:
+            return "图像记忆未启用"
+        try:
+            depth = int(args.get("history_depth", self.image_history_depth))
+        except (TypeError, ValueError):
+            depth = self.image_history_depth
+        depth = max(1, depth)
+        payload = {
+            "processed": [record.describe() for record in self.images.processed_records()],
+            "history": {
+                camera: [record.describe() for record in self.images.history_records(camera, depth)]
+                for camera in self.images.all_history_cameras()
+            },
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _fetch_history_image(self, args: dict) -> tuple[str, dict[str, str]]:
+        if self.images is None:
+            return "图像记忆未启用", {}
+        camera = str(args.get("topic", ""))
+        try:
+            ts = float(args.get("time"))
+        except (TypeError, ValueError):
+            return "time 必须是数字", {}
+        record = self.images.nearest_history(camera, ts)
+        if record is None:
+            return f"未找到链路 {camera} 的历史图像", {}
+        return json.dumps(record.describe(), ensure_ascii=False), {record.url: self.images.data_url(record)}
+
+    def _image_context(self) -> list[dict]:
+        """构建动态图像段:current -> processed -> history(每链路最近 N 张)。"""
+        if self.images is None:
+            return []
+        if self.frame_provider is not None:
+            try:
+                frames = self.frame_provider()
+            except Exception:
+                frames = {}
+            if frames:
+                self.images.refresh_current(frames)
+        parts: list[dict] = []
+        for record in self.images.current_records():
+            self._append_image(parts, "current", record)
+        for record in self.images.processed_records():
+            self._append_image(parts, "processed", record)
+        for camera in self.images.all_history_cameras():
+            for record in self.images.history_records(camera, self.image_history_depth):
+                self._append_image(parts, "history", record)
+        return parts
+
+    def _append_image(self, parts: list[dict], label: str, record) -> None:
+        try:
+            url = self.images.data_url(record)
+        except Exception:
+            return
+        parts.append(
+            {"type": "text", "text": f"# {label} image\n{json.dumps(record.describe(), ensure_ascii=False)}"}
+        )
+        parts.append({"type": "image_url", "image_url": {"url": url}})
+
+    @staticmethod
+    def _timestamp_message() -> dict:
+        now = time.time()
+        iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now)) + f".{int((now % 1) * 1000):03d}Z"
+        return {"role": "user", "content": f"# 当前时间\n{iso} (epoch {now:.3f})"}
 
     def _observations(self) -> list[dict]:
         """收集各观测 provider(视觉、机器人状态)的消息;单个 provider 失败不影响其它。"""
@@ -277,6 +438,9 @@ class AgentLoop:
         context_budget_tokens: int = 12000,
         context_compaction_enabled: bool = True,
         max_recent_tasks: int = 8,
+        image_memory_factory: Callable[[str], ImageMemory] | None = None,
+        frame_provider: Callable[[], dict] | None = None,
+        image_history_depth: int = 4,
     ) -> None:
         self.llm = llm
         self.skills = skills
@@ -286,12 +450,20 @@ class AgentLoop:
         self.observation_provider = observation_provider
         self.robot_context_provider = robot_context_provider
         self.robot_state_provider = robot_state_provider
+        self.image_memory_factory = image_memory_factory
+        self.frame_provider = frame_provider
+        self.image_history_depth = max(1, int(image_history_depth))
         self.context_builder = ContextBuilder(
             Compactor(context_budget_tokens, context_compaction_enabled, max_recent_tasks)
         )
         self.queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._running = False
+        self._current_memory: ImageMemory | None = None
+
+    def current_memory(self) -> ImageMemory | None:
+        """返回当前正在执行任务所属 session 的图像记忆(供采样器使用)。"""
+        return self._current_memory
 
     def start(self) -> None:
         """启动后台任务消费线程。"""
@@ -319,6 +491,10 @@ class AgentLoop:
             task_id, session_id, _instruction = item
             try:
                 task = self.session_manager.load_task(session_id, task_id)
+                memory = (
+                    self.image_memory_factory(session_id) if self.image_memory_factory else None
+                )
+                self._current_memory = memory
                 TaskRunner(
                     task,
                     self.session_manager,
@@ -330,6 +506,9 @@ class AgentLoop:
                     self.observation_provider,
                     robot_context_provider=self.robot_context_provider,
                     robot_state_provider=self.robot_state_provider,
+                    image_memory=memory,
+                    frame_provider=self.frame_provider,
+                    image_history_depth=self.image_history_depth,
                 ).run()
             except Exception as exc:
                 if self.on_state:

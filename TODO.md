@@ -179,6 +179,8 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
   任务落盘 + TaskState 发布
 ```
 
+# 9.15
+
 ```
 ros2 action send_goal /nova_perception_executor/visualize_frame/execute nova_interfaces/action/MCPExecute \
 "{tool_name: visualize_frame, params_json: '{\"image\":\"robot0_agentview_right\",\"origin\":[0.2477,-0.0077,0.5845],\"orientation\":[0.6756,0.7265,0.1004,0.0756],\"axis_length\":0.1}', trace_id: dbg}" --feedback
@@ -234,3 +236,13 @@ ros2 action send_goal /nova_perception_executor/visualize_grid/execute nova_inte
 ros2 action send_goal /nova_perception_executor/visualize_grid/execute nova_interfaces/action/MCPExecute \
 "{tool_name: visualize_grid, params_json: '{\"image\":\"robot0_agentview_right\",\"grid_size\":6}', trace_id: dbg}" --feedback
 ```
+
+# 9.16
+
+agentos图像记忆模块需要这样设计:1.图像流是连续信息,我们需要将其按时间/事件(先按时间)截断为离散图像落盘保存.首先开辟一块本session的缓存目录(我记得已经设计有了,就复用原来的),然后各个链路先每1s(可配置)截一张图.如果本次截图和1s前的像素差异非常小(归一化mse阈值可以配置),那就跳过保存.
+2.历史图像需要有链路+时间戳描述,每当模型收到图像一定要有对应描述.工具返回的图像需要有时间+"他是怎么来的(与我讨论设计)",以便模型建立对应关系.
+3.context builder 在最前面要保留最新的各路current image,保证每次喂给模型的消息中都包含最新图像.然后给出processed image段,所有工具返回的图像,最后给出history image段,保留3链路x4张(可配置)除当前图外最新的历史记忆图片.
+4.模型可调用工具:fetch_history_image(time, topic):根据时间调入与其时间最相近的相应链路的图片. list_accessible_images(history_depth=N):获取所有工具图片,和前N张历史图片描述.
+5.模型可以把他能获取到的任意图像喂给perception tools(包括当前图像/历史图像/工具返回图像), 只喂url, perception tools自己从缓存文件里面读.因此perception tools图像参数处理方式要大改.
+6.模型需要知道时间.每次模型自我对话拼接和task等都应该在末尾(增加缓存命中率)带入时间戳.
+这是一个大改动,不清楚的地方与我讨论.

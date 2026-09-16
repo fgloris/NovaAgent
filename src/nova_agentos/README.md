@@ -24,12 +24,25 @@ session start/resume → RunTask(session_id, 入队,立即返回 task_id)
 | 文件 | 职责 |
 | --- | --- |
 | `skill_store.py` | 扫描 `skills/<name>/{SKILL.yaml, SKILL.md}`,生成索引、按需加载正文 |
-| `agent_loop.py` | 后台持续循环:消费消息队列、调用 VLM、执行工具、维护持久上下文 |
-| `vision_observer.py` | 订阅 `/nova/env/obs` 与 `/nova/env/camera/*/image_raw`,为每轮规划生成多模态观测消息 |
+| `agent_loop.py` | 后台持续循环:消费消息队列、调用 VLM、执行工具、维护持久上下文;装配动态图像段与时间戳 |
+| `memory/` | 记忆包:`session.py`(会话/任务记忆 + ContextBuilder)、`images.py`(图像记忆)、`sampler.py`(历史采样) |
+| `vision_observer.py` | 订阅 `/nova/env/obs` 与 `/nova/env/camera/*/image_raw`,提供环境摘要与最新帧 |
 | `robot_state_observer.py` | 从 `/nova/env/info` 发现机器人状态话题并订阅,每轮注入最新 EEF/关节/夹爪状态(与工具无关) |
 | `mcp_adapter.py` | 与 executor_manager 通信(查询工具 + 发 action goal) |
-| `agentos_node.py` | ROS 2 节点:RunTask/会话服务 + agent_msg 消息发布 + 首任务自动命名 |
+| `agentos_node.py` | ROS 2 节点:RunTask/会话服务 + agent_msg 消息发布 + 首任务自动命名 + 图像记忆装配 |
 | `cli/` | 终端 TUI 包(Textual):会话自动创建、对话渲染、命令处理、`--plain` REPL |
+
+### 图像记忆
+
+agentos 是图像记忆的唯一持有者,perception executor 无状态、按 `file://` 引用读文件。
+
+- 落盘根目录 `memory_dir`(默认 `~/.cache/nova_agentos/memory`),每个 session 一个子目录:
+  `current/<camera>.jpg`(最新帧)、`history/<epoch_ms>-<camera>.jpg`(采样历史)、`processed/<epoch_ms>-<camera>-<seq>.jpg`(工具返回图)。
+- 元信息(相机/时间/来源/底图)写在 JPEG COM 段;模型只看到 `file://<kind>/<file>`。
+- `ImageSampler` 每 `image_sample_period_sec` 采样一次,与上一张归一化 MSE 低于阈值则跳过。
+- 每轮 context 动态尾部依次注入 current → processed → history 图段,最后追加时间戳(保留稳定前缀以提升缓存命中)。
+- 模型可调本地工具 `list_accessible_images(history_depth=N)` 与 `fetch_history_image(time, topic)`。
+- 调用 perception 工具时,agentos 自动注入隐藏参数 `image_root` 并把相机名解析为对应 current 图。
 
 ## Skill 说明
 

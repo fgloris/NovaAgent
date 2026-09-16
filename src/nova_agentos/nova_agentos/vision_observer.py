@@ -66,33 +66,20 @@ class VisionObserver:
         future = self._info_client.call_async(EnvInfo.Request())
         future.add_done_callback(self._info_done)
 
+    def latest_frames(self) -> dict[str, tuple[np.ndarray, float]]:
+        """返回各链路最新帧 {camera: (frame, timestamp)} 的快照(浅拷贝)。"""
+        with self._lock:
+            return dict(self._frames)
+
     def snapshot_message(self) -> dict | None:
-        """生成一条 OpenAI 兼容的多模态 user 消息(文本摘要 + 各相机图像)。"""
+        """生成一条文本 user 消息(环境摘要 + 相机状态);图像由 ImageMemory 统一注入。"""
         with self._lock:
             obs = dict(self._obs)
             frames = dict(self._frames)
             cameras = list(self.camera_names)
         if not obs and not frames:
             return None
-
-        content: list[dict] = [{"type": "text", "text": self._snapshot_text(obs, frames, cameras)}]
-        added = 0
-        for cam in cameras:
-            item = frames.get(cam)
-            if item is None:
-                continue
-            frame, _stamp = item
-            content.append(
-                {
-                    "type": "text",
-                    "text": f"camera: {cam}; timestamp: {time.time():.6f}; shape: {list(frame.shape)}",
-                }
-            )
-            content.append({"type": "image_url", "image_url": {"url": self._image_to_data_url(frame)}})
-            added += 1
-            if added >= self.max_images:
-                break
-        return {"role": "user", "content": content}
+        return {"role": "user", "content": self._snapshot_text(obs, frames, cameras)}
 
     def get_robot_context(self) -> dict | None:
         """返回最近一次刷新到的机器人结构上下文(可能为 None)。"""

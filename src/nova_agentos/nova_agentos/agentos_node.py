@@ -3,6 +3,7 @@
 
 agent 全部消息(规划文本/工具调用与结果/完成)经全局话题 /nova/agentos/agent_msg 发布。
 """
+import os
 import threading
 from pathlib import Path
 
@@ -24,7 +25,7 @@ from nova_interfaces.srv import (
 from nova_agentos.api_logger import ApiLogger
 from nova_agentos.agent_loop import AgentLoop
 from nova_agentos.mcp_adapter import McpAdapter
-from nova_agentos.memory import SessionManager
+from nova_agentos.memory import ImageMemory, ImageSampler, SessionManager
 from nova_agentos.robot_state_observer import RobotStateObserver
 from nova_agentos.skill_store import SkillStore
 from nova_agentos.vision_observer import VisionObserver
@@ -64,6 +65,14 @@ class AgentosNode(Node):
         self.declare_parameter("api_log_dir", "")
         self.declare_parameter("api_log_retention_days", 30)
 
+        # ---------- 图像记忆 ----------
+        self.declare_parameter("memory_dir", "")
+        self.declare_parameter("image_sample_period_sec", 1.0)
+        self.declare_parameter("image_diff_mse_threshold", 0.0005)
+        self.declare_parameter("image_history_depth", 4)
+        self.declare_parameter("image_link_max", 60)
+        self.declare_parameter("image_processed_max", 16)
+
         skills_dir = str(self.get_parameter("skills_dir").value)
         if not skills_dir:
             from ament_index_python.packages import get_package_share_directory
@@ -97,6 +106,19 @@ class AgentosNode(Node):
             execute_action=str(self.get_parameter("execute_action").value),
         )
 
+        # session 级图像记忆:按需创建并缓存,采样器写入当前运行任务所属 session
+        default_memory = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+        self._memory_dir = Path(
+            str(self.get_parameter("memory_dir").value) or default_memory / "nova_agentos" / "memory"
+        ).expanduser()
+        self._memory_cache: dict[str, ImageMemory] = {}
+        self._image_history_depth = max(1, int(self.get_parameter("image_history_depth").value))
+        self._image_link_max = max(1, int(self.get_parameter("image_link_max").value))
+        self._image_processed_max = max(1, int(self.get_parameter("image_processed_max").value))
+        self._image_diff_mse = float(self.get_parameter("image_diff_mse_threshold").value)
+        self._image_max_size = int(self.get_parameter("vlm_max_image_size").value)
+        self._image_jpeg_quality = int(self.get_parameter("vlm_jpeg_quality").value)
+
         self._msg_pub = self.create_publisher(
             TaskState, str(self.get_parameter("agent_msg_topic").value), 10
         )
@@ -112,8 +134,17 @@ class AgentosNode(Node):
             context_budget_tokens=int(self.get_parameter("context_budget_tokens").value),
             context_compaction_enabled=bool(self.get_parameter("context_compaction_enabled").value),
             max_recent_tasks=int(self.get_parameter("max_recent_tasks").value),
+            image_memory_factory=self._image_memory,
+            frame_provider=self.vision.latest_frames,
+            image_history_depth=self._image_history_depth,
         )
         self.loop.start()
+        self.sampler = ImageSampler(
+            self,
+            self.vision.latest_frames,
+            self.loop.current_memory,
+            period_sec=float(self.get_parameter("image_sample_period_sec").value),
+        )
 
         self.create_service(
             RunTask, str(self.get_parameter("run_task_service").value), self._run_task_cb
@@ -123,7 +154,24 @@ class AgentosNode(Node):
         self.create_service(EndSession, "/nova/agentos/session/end", self._end_session_cb)
         self.create_service(ListSessions, "/nova/agentos/session/list", self._list_sessions_cb)
         self.create_service(RenameSession, "/nova/agentos/session/rename", self._rename_session_cb)
-        self.get_logger().info(f"AgentOS 就绪,skill 目录: {skills_dir}")
+        self.get_logger().info(
+            f"AgentOS 就绪,skill 目录: {skills_dir}, 图像记忆目录: {self._memory_dir}"
+        )
+
+    def _image_memory(self, session_id: str) -> ImageMemory:
+        """返回(并按需创建)指定 session 的图像记忆。"""
+        memory = self._memory_cache.get(session_id)
+        if memory is None:
+            memory = ImageMemory(
+                self._memory_dir / session_id,
+                link_max=self._image_link_max,
+                processed_max=self._image_processed_max,
+                jpeg_quality=self._image_jpeg_quality,
+                max_size=self._image_max_size,
+                diff_mse_threshold=self._image_diff_mse,
+            )
+            self._memory_cache[session_id] = memory
+        return memory
 
     def _run_task_cb(self, request, response):
         """RunTask 非阻塞:入队即返回 task_id,agent 消息经 /nova/agentos/agent_msg 观察。"""

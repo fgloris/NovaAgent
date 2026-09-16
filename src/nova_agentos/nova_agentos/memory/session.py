@@ -358,6 +358,7 @@ class ContextBuilder:
             system_prompt += "\n\n机器人描述 JSON:\n" + json.dumps(robot_context.get("context_json", {}), ensure_ascii=False)
             session.context["robot_description_sha256"] = robot_context.get("description_sha256", "")
             session.context["robot_context_schema"] = robot_context.get("context_schema", "robot_context_v1")
+        # 稳定前缀在前(system/历史/skill/工具 schema),动态观测与图像随后,时间戳由调用方放在末尾
         messages = [
             {"role": "system", "content": system_prompt},
             {
@@ -369,13 +370,13 @@ class ContextBuilder:
                     f"# 当前任务事件\n{json.dumps(current.events, ensure_ascii=False)}"
                 ),
             },
+            {"role": "user", "content": f"# 可用工具 schema\n{json.dumps(tools, ensure_ascii=False)}"},
         ]
         if observation:
             if isinstance(observation, list):
                 messages.extend(item for item in observation if item)
             else:
                 messages.append(observation)
-        messages.append({"role": "user", "content": f"# 可用工具 schema\n{json.dumps(tools, ensure_ascii=False)}"})
         if compacted:
             current.add_event("context_compacted", message="历史任务已按预算压缩")
         return messages

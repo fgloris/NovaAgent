@@ -7,7 +7,9 @@ from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
-    skills_dir = get_package_share_directory("nova_agentos") + "/skills"
+    agentos_share = get_package_share_directory("nova_agentos")
+    skills_dir = agentos_share + "/skills"
+    agentos_config = Path(agentos_share) / "config" / "agentos.yaml"
     vla_config = Path(get_package_share_directory("nova_vla_executor")) / "config" / "vla.yaml"
     perception_config = (
         Path(get_package_share_directory("nova_perception_executor")) / "config" / "perception.yaml"
@@ -48,7 +50,7 @@ def generate_launch_description():
                 executable="nova_agentos_node",
                 name="nova_agentos",
                 output="screen",
-                parameters=[{"skills_dir": skills_dir}],
+                parameters=[str(agentos_config), {"skills_dir": skills_dir}],
             ),
         ]
     )
