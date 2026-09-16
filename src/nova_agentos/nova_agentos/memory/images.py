@@ -61,6 +61,7 @@ class ImageRecord:
     tool: str = ""
     params: dict = field(default_factory=dict)
     base: str = ""
+    note: str = ""
 
     @property
     def url(self) -> str:
@@ -79,6 +80,8 @@ class ImageRecord:
         }
         if self.origin == ORIGIN_TOOL:
             meta.update({"tool": self.tool, "params": self.params, "base": self.base})
+        if self.note:
+            meta["note"] = self.note
         return meta
 
     def describe(self) -> dict:
@@ -110,6 +113,7 @@ class ImageMemory:
         jpeg_quality: int = 80,
         max_size: int = 768,
         diff_mse_threshold: float = 0.0005,
+        state_diff_threshold: float = 0.005,
     ) -> None:
         self.root = Path(root).expanduser()
         self.link_max = max(1, int(link_max))
@@ -117,11 +121,13 @@ class ImageMemory:
         self.jpeg_quality = min(95, max(20, int(jpeg_quality)))
         self.max_size = max(64, int(max_size))
         self.diff_mse_threshold = max(0.0, float(diff_mse_threshold))
+        self.state_diff_threshold = max(0.0, float(state_diff_threshold))
         self._lock = threading.RLock()
         self._current: dict[str, ImageRecord] = {}
         self._history: dict[str, list[ImageRecord]] = {}
         self._processed: list[ImageRecord] = []
         self._last_frames: dict[str, np.ndarray] = {}
+        self._last_state: list[float] | None = None
         self._seq = 0
         self._load()
 
