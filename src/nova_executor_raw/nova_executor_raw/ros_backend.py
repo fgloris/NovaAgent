@@ -77,6 +77,7 @@ class RosEEFBackend:
             "supports_gripper": True,
             "max_linear_speed": 0.2,
             "max_angular_speed": 1.0,
+            "max_gripper_speed": 1.0,
             "workspace": {"min": [-0.8, -0.8, 0.0], "max": [0.8, 0.8, 1.2]},
         }
 

@@ -30,6 +30,27 @@ def test_gripper_holds_when_later_waypoint_omits_it():
     assert all(pose.gripper == 1.0 for pose in trajectory)
 
 
+def test_pure_gripper_change_gets_its_own_duration():
+    # 位置不变、仅夹爪变化时,应给出足够帧数让夹爪闭合,而不是瞬间结束
+    poses = [Pose([0, 0, 0], [0, 0, 0, 1], 1.0), Pose([0, 0, 0], [0, 0, 0, 1], -1.0)]
+    trajectory = interpolate(poses, gripper_speed=1.0, hz=20)
+    assert len(trajectory) > 20
+    assert trajectory[-1].gripper == -1.0
+
+
+def test_gripper_closes_after_reaching_target_position():
+    # 先到位再闭合:夹爪开始变化时,位置已到达段终点
+    poses = [Pose([0, 0, 0], [0, 0, 0, 1], 1.0), Pose([0, 0, 0.2], [0, 0, 0, 1], -1.0)]
+    trajectory = interpolate(poses, linear_speed=0.2, gripper_speed=1.0)
+    grips = [pose.gripper for pose in trajectory]
+    assert grips[0] == 1.0
+    assert all(a >= b for a, b in zip(grips, grips[1:]))
+    assert grips[-1] == -1.0
+    assert any(g not in (1.0, -1.0) for g in grips)
+    first_change = next(pose for pose in trajectory if pose.gripper != 1.0)
+    assert first_change.position == [0.0, 0.0, 0.2]
+
+
 def test_relative_compose_inherits_base_gripper():
     base = Pose([0, 0, 0], [0, 0, 0, 1], 1.0)
     delta = Pose([0, 0, 0.1], [0, 0, 0, 1])

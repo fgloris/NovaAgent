@@ -80,20 +80,20 @@ def slerp(a, b, t):
     ]
 
 
-def interpolate(poses, linear_speed=0.1, angular_speed=0.5, hz=20):
-    """在相邻路径点之间插值,生成位置线性、姿态 SLERP 的离散轨迹点。
+def interpolate(poses, linear_speed=0.1, angular_speed=0.5, gripper_speed=1.0, hz=20):
+    """在相邻路径点之间插值,生成位置线性、姿态 SLERP、夹爪渐变的离散轨迹点。
 
-    每段的时长取"位移/线速度""转角/角速度""1/hz"三者的最大值,
-    再按 hz 离散出若干步,保证运动速度不超上限且至少有一帧。
+    每段先完成位置/姿态运动(时长取"位移/线速度""转角/角速度""1/hz"最大值),
+    再在到达位置后用"夹爪行程/夹爪速度"的时间完成夹爪开合,保证先到位再闭合。
+    未指定夹爪的路径点沿用最近一次显式值(含起点)。
     """
     if not poses:
         raise ValueError("empty_waypoints")
     out = []
-    # 夹爪沿轨迹保持:未指定的路径点沿用最近一次显式夹爪值(含起点)
     grip = poses[0].gripper
     for a, b in zip(poses, poses[1:]):
-        if b.gripper is not None:
-            grip = b.gripper
+        target = b.gripper if b.gripper is not None else grip
+        # 运动阶段:位置线性、姿态 slerp,夹爪保持段起点值
         d = math.sqrt(sum((b.position[i] - a.position[i]) ** 2 for i in range(3)))
         qd = abs(sum(x * y for x, y in zip(a.orientation, b.orientation)))
         ang = 2 * math.acos(max(-1, min(1, qd)))
@@ -111,6 +111,20 @@ def interpolate(poses, linear_speed=0.1, angular_speed=0.5, hz=20):
                     grip,
                 )
             )
+        # 夹爪阶段:位置/姿态停在 b,夹爪从起点值线性过渡到目标值,末尾补一帧 dwell
+        if grip is not None and abs(target - grip) > 1e-9:
+            steps = max(1, int(math.ceil(abs(target - grip) / max(gripper_speed, 1e-6) * hz)))
+            for j in range(1, steps + 1):
+                t = j / steps
+                out.append(
+                    Pose(
+                        list(b.position),
+                        list(b.orientation),
+                        grip + t * (target - grip),
+                    )
+                )
+            out.append(Pose(list(b.position), list(b.orientation), target))
+        grip = target
     last = poses[-1]
     out.append(Pose(list(last.position), list(last.orientation), grip))
     return out

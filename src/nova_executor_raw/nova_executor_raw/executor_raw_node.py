@@ -41,6 +41,7 @@ TOOLS = {
                 },
                 "max_linear_speed": {"type": "number"},
                 "max_angular_speed": {"type": "number"},
+                "max_gripper_speed": {"type": "number"},
             },
             "required": ["waypoints"],
         },
@@ -166,6 +167,7 @@ class ExecutorRawNode(Node):
                     poses,
                     min(float(p.get("max_linear_speed", b.get("max_linear_speed", 0.2))),b.get("max_linear_speed", 0.2)),
                     min(float(p.get("max_angular_speed", b.get("max_angular_speed", 1.0))),b.get("max_angular_speed", 1.0)),
+                    min(float(p.get("max_gripper_speed", b.get("max_gripper_speed", 1.0))),b.get("max_gripper_speed", 1.0)),
                 )
                 vr = self.backend.validate_trajectory(traj, p)
                 if vr:
