@@ -178,6 +178,7 @@ def _runner_with_memory(tmp_path):
     runner = object.__new__(TaskRunner)
     runner.images = memory
     runner.image_history_depth = 4
+    runner.image_processed_depth = 3
     runner.frame_provider = None
     return runner, processed
 
@@ -209,6 +210,30 @@ def test_image_context_dedups_repeated_urls(tmp_path):
     urls = [p["image_url"]["url"] for p in parts if p.get("type") == "image_url"]
     assert len(urls) == len(set(urls))
     assert urls.count(memory.data_url(history)) == 1
+
+
+def test_image_context_limits_processed_render_depth(tmp_path):
+    runner, _ = _runner_with_memory(tmp_path)
+    memory = runner.images
+    runner.image_processed_depth = 2
+    frame = np.zeros((30, 40, 3), dtype=np.uint8)
+    for i in range(2):
+        buf = io.BytesIO()
+        Image.fromarray(frame).save(buf, format="JPEG")
+        memory.save_processed(buf.getvalue(), "camA", "visualize_grid", {}, "", 102.0 + i)
+    processed = memory.processed_records()
+    assert len(processed) == 3
+    parts = runner._image_context()
+    # current(1) + 最近 2 张 processed + history(1)
+    assert len([p for p in parts if p.get("type") == "image_url"]) == 4
+    summary = "\n".join(
+        p["text"] for p in parts if p.get("type") == "text" and "更早的工具返回图" in p["text"]
+    )
+    assert processed[0].url in summary
+    assert processed[1].url not in summary
+    assert processed[2].url not in summary
+    # 摘要中的旧图仍可被解析引用(继续叠画)
+    assert memory.find(processed[0].url) is not None
 
 
 def test_activate_session_preheats_image_memory(tmp_path):

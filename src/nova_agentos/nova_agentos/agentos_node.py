@@ -71,6 +71,7 @@ class AgentosNode(Node):
         self.declare_parameter("image_diff_mse_threshold", 0.0005)
         self.declare_parameter("image_state_diff_threshold", 0.005)
         self.declare_parameter("image_history_depth", 4)
+        self.declare_parameter("image_processed_depth", 3)
         self.declare_parameter("image_link_max", 60)
         self.declare_parameter("image_processed_max", 16)
 
@@ -114,6 +115,7 @@ class AgentosNode(Node):
         ).expanduser()
         self._memory_cache: dict[str, ImageMemory] = {}
         self._image_history_depth = max(1, int(self.get_parameter("image_history_depth").value))
+        self._image_processed_depth = max(0, int(self.get_parameter("image_processed_depth").value))
         self._image_link_max = max(1, int(self.get_parameter("image_link_max").value))
         self._image_processed_max = max(1, int(self.get_parameter("image_processed_max").value))
         self._image_diff_mse = float(self.get_parameter("image_diff_mse_threshold").value)
@@ -139,6 +141,7 @@ class AgentosNode(Node):
             image_memory_factory=self._image_memory,
             frame_provider=self.vision.latest_frames,
             image_history_depth=self._image_history_depth,
+            image_processed_depth=self._image_processed_depth,
         )
         self.loop.start()
         self.sampler = ImageSampler(

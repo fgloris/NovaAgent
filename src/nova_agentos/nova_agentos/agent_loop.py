@@ -103,6 +103,7 @@ class TaskRunner:
         image_memory: ImageMemory | None = None,
         frame_provider: Callable[[], dict] | None = None,
         image_history_depth: int = 4,
+        image_processed_depth: int = 3,
     ) -> None:
         self.task = task
         self.manager = session_manager
@@ -117,6 +118,7 @@ class TaskRunner:
         self.images = image_memory
         self.frame_provider = frame_provider
         self.image_history_depth = max(1, int(image_history_depth))
+        self.image_processed_depth = max(0, int(image_processed_depth))
         self.runtime_messages: list[dict] = []
 
     def run(self) -> None:
@@ -357,7 +359,11 @@ class TaskRunner:
         return json.dumps(fetched.describe(), ensure_ascii=False), {}
 
     def _image_context(self) -> list[dict]:
-        """构建动态图像段:current -> processed -> history(每链路最近 N 张),按 URL 去重。"""
+        """构建动态图像段:current -> processed -> history(每链路最近 N 张),按 URL 去重。
+
+        processed 只渲染最近 image_processed_depth 张,更旧的合并为文本摘要(含 url,
+        仍可被 visualize_* 引用继续叠加绘画),避免上下文图像块过多。
+        """
         if self.images is None:
             return []
         if self.frame_provider is not None:
@@ -371,7 +377,21 @@ class TaskRunner:
         seen: set[str] = set()
         for record in self.images.current_records():
             self._append_image(parts, "current", record, seen)
-        for record in self.images.processed_records():
+        processed = self.images.processed_records()
+        recent = processed[-self.image_processed_depth:] if self.image_processed_depth > 0 else []
+        older = processed[: len(processed) - len(recent)]
+        if older:
+            lines = [
+                f"{record.url} | tool={record.tool} | camera={record.camera} | time={round(record.time, 3)}"
+                for record in older
+            ]
+            parts.append(
+                {
+                    "type": "text",
+                    "text": "# 更早的工具返回图(未逐张渲染,可引用 url 继续叠加绘画)\n" + "\n".join(lines),
+                }
+            )
+        for record in recent:
             self._append_image(parts, "processed", record, seen)
         for camera in self.images.all_history_cameras():
             for record in self.images.history_records(camera, self.image_history_depth):
@@ -459,6 +479,7 @@ class AgentLoop:
         image_memory_factory: Callable[[str], ImageMemory] | None = None,
         frame_provider: Callable[[], dict] | None = None,
         image_history_depth: int = 4,
+        image_processed_depth: int = 3,
     ) -> None:
         self.llm = llm
         self.skills = skills
@@ -471,6 +492,7 @@ class AgentLoop:
         self.image_memory_factory = image_memory_factory
         self.frame_provider = frame_provider
         self.image_history_depth = max(1, int(image_history_depth))
+        self.image_processed_depth = max(0, int(image_processed_depth))
         self.context_builder = ContextBuilder(
             Compactor(context_budget_tokens, context_compaction_enabled, max_recent_tasks)
         )
@@ -541,6 +563,7 @@ class AgentLoop:
                     image_memory=memory,
                     frame_provider=self.frame_provider,
                     image_history_depth=self.image_history_depth,
+                    image_processed_depth=self.image_processed_depth,
                 ).run()
             except Exception as exc:
                 if self.on_state:

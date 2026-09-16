@@ -13,6 +13,8 @@ nova_agentos:
     image_state_diff_threshold: 0.5
     # 注入 context 时每条链路保留的历史图数量
     image_history_depth: 3
+    # 注入 context 时渲染的工具返回图(processed)数量;更旧的只给 url 摘要(可继续引用叠画)
+    image_processed_depth: 3
     # 磁盘上每条链路最多保留的历史图数量(超出删最旧)
     image_link_max: 60
     # 磁盘上工具返回图(processed)最多保留数量
