@@ -79,3 +79,17 @@ def test_snapshot_gate_requires_all_links_and_state_unchanged(tmp_path):
     assert memory.save_snapshot(changed, [0.0]) is not None
     assert len(memory.history_records("camA", 10)) == 3
     assert len(memory.history_records("camB", 10)) == 3
+
+
+def test_snapshot_same_stamp_not_recorded_twice(tmp_path):
+    memory = ImageMemory(tmp_path, diff_mse_threshold=0.0005, state_diff_threshold=0.005)
+    a = _frame(20)
+    assert memory.save_snapshot({"camA": (a, 1.0)}, [0.04]) is not None
+    # 同一帧 stamp 因夹爪变化再次触发 -> 不重复记录
+    assert memory.save_snapshot({"camA": (a.copy(), 1.0)}, [0.0]) is None
+    assert len(memory.history_records("camA", 10)) == 1
+    # 帧更新(stamp 变化)且画面变化 -> 正常记录
+    changed = a.copy()
+    changed[:] = 255
+    assert memory.save_snapshot({"camA": (changed, 2.0)}, [0.0]) is not None
+    assert len(memory.history_records("camA", 10)) == 2

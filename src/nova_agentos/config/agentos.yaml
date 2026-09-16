@@ -10,9 +10,9 @@ nova_agentos:
     image_diff_mse_threshold: 0.0005
     # 状态去重阈值:夹爪关节位置与上一快照的最大差低于此值才允许跳过
     # (画面与夹爪都几乎不变才跳过;夹爪动作幅度小、画面 MSE 反映不出,故单列)
-    image_state_diff_threshold: 0.005
+    image_state_diff_threshold: 0.5
     # 注入 context 时每条链路保留的历史图数量
-    image_history_depth: 4
+    image_history_depth: 3
     # 磁盘上每条链路最多保留的历史图数量(超出删最旧)
     image_link_max: 60
     # 磁盘上工具返回图(processed)最多保留数量

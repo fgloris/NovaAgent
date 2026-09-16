@@ -178,6 +178,7 @@ def _runner_with_memory(tmp_path):
     runner = object.__new__(TaskRunner)
     runner.images = memory
     runner.image_history_depth = 4
+    runner.frame_provider = None
     return runner, processed
 
 
@@ -196,6 +197,18 @@ def test_local_image_tools_list_and_fetch(tmp_path):
     assert "fetch_history_image" in fetched.note
     assert fetched.base  # 指向原历史图
     assert "fetch_history_image" in text
+
+
+def test_image_context_dedups_repeated_urls(tmp_path):
+    runner, _ = _runner_with_memory(tmp_path)
+    memory = runner.images
+    history = memory.history_records("camA", 10)[0]
+    with memory._lock:
+        memory._history["camA"].extend([history, history])
+    parts = runner._image_context()
+    urls = [p["image_url"]["url"] for p in parts if p.get("type") == "image_url"]
+    assert len(urls) == len(set(urls))
+    assert urls.count(memory.data_url(history)) == 1
 
 
 def test_activate_session_preheats_image_memory(tmp_path):

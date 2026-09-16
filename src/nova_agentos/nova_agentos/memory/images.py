@@ -129,6 +129,7 @@ class ImageMemory:
         self._history: dict[str, list[ImageRecord]] = {}
         self._processed: list[ImageRecord] = []
         self._last_frames: dict[str, np.ndarray] = {}
+        self._last_stamps: dict[str, float] = {}
         self._last_state: list[float] | None = None
         self._seq = 0
         self._load()
@@ -189,6 +190,11 @@ class ImageMemory:
             return None
         records: list[ImageRecord] = []
         for camera, (frame, stamp) in frames.items():
+            with self._lock:
+                if self._last_stamps.get(camera) == stamp:
+                    # 同一帧已记录过(夹爪变化等重复触发),不重复落盘
+                    continue
+                self._last_stamps[camera] = stamp
             filename = f"{int(stamp * 1000)}-{camera}.jpg"
             record = self._write(KIND_HISTORY, filename, camera, frame, stamp, ORIGIN_RAW)
             with self._lock:
@@ -203,7 +209,7 @@ class ImageMemory:
         if state is not None:
             with self._lock:
                 self._last_state = list(state)
-        return records
+        return records or None
 
     def save_processed(
         self,

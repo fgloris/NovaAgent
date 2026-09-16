@@ -357,7 +357,7 @@ class TaskRunner:
         return json.dumps(fetched.describe(), ensure_ascii=False), {}
 
     def _image_context(self) -> list[dict]:
-        """构建动态图像段:current -> processed -> history(每链路最近 N 张)。"""
+        """构建动态图像段:current -> processed -> history(每链路最近 N 张),按 URL 去重。"""
         if self.images is None:
             return []
         if self.frame_provider is not None:
@@ -368,20 +368,24 @@ class TaskRunner:
             if frames:
                 self.images.refresh_current(frames)
         parts: list[dict] = []
+        seen: set[str] = set()
         for record in self.images.current_records():
-            self._append_image(parts, "current", record)
+            self._append_image(parts, "current", record, seen)
         for record in self.images.processed_records():
-            self._append_image(parts, "processed", record)
+            self._append_image(parts, "processed", record, seen)
         for camera in self.images.all_history_cameras():
             for record in self.images.history_records(camera, self.image_history_depth):
-                self._append_image(parts, "history", record)
+                self._append_image(parts, "history", record, seen)
         return parts
 
-    def _append_image(self, parts: list[dict], label: str, record) -> None:
+    def _append_image(self, parts: list[dict], label: str, record, seen: set[str]) -> None:
+        if record.url in seen:
+            return
         try:
             url = self.images.data_url(record)
         except Exception:
             return
+        seen.add(record.url)
         parts.append(
             {"type": "text", "text": f"# {label} image\n{json.dumps(record.describe(), ensure_ascii=False)}"}
         )
