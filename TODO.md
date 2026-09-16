@@ -121,7 +121,7 @@ python3 src/nova_robocasa_bridge/nova_robocasa_bridge/robocasa_sim_server.py
 
 ### preception tools
 ```bash
-. install/setup.sh && ros2 run nova_preception_executor nova_preception_executor_node
+. install/setup.sh && ros2 run nova_perception_executor nova_perception_executor_node
 ```
 
 ### AgentOS

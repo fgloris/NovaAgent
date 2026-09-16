@@ -31,13 +31,6 @@ def generate_launch_description():
                 output="screen",
             ),
             Node(
-                package="nova_vla_executor",
-                executable="nova_vla_executor_node",
-                name="nova_vla_executor",
-                output="screen",
-                parameters=[str(vla_config)],
-            ),
-            Node(
                 package="nova_executor_manager",
                 executable="nova_executor_manager_node",
                 name="nova_executor_manager",
