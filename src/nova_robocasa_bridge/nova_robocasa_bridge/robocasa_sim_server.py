@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 import argparse
+import json
 import os
 import sys
 import threading
@@ -72,6 +73,15 @@ def _normalize_quat_xyzw(quaternion: Any) -> np.ndarray:
     if norm < 1e-12:
         raise ValueError("invalid quaternion")
     return q / norm
+
+
+class SimError(Exception):
+    """带错误码与结构化明细的仿真错误;__str__ 为 JSON,便于跨层解析。"""
+
+    def __init__(self, code: str, **details: Any) -> None:
+        self.code = code
+        self.details = details
+        super().__init__(json.dumps({"code": code, **details}, ensure_ascii=False))
 
 
 def _orientation_to_quat_xyzw(orientation: Any) -> np.ndarray:
@@ -550,12 +560,13 @@ class RoboCasaSession:
         damping = float(constraints.get("ik_damping", 1e-3))
         solutions: list[list[float]] = []
         try:
-            for waypoint in waypoints:
+            for index, waypoint in enumerate(waypoints):
                 data.qpos[qpos_ids] = seed
                 mujoco.mj_forward(model, data)
                 target_position, target_rotation = self._target_world(waypoint)
                 solved = False
-                for _ in range(100):
+                iterations = 0
+                for iterations in range(1, 101):
                     current_position = np.asarray(data.site_xpos[int(site_id)])
                     current_rotation = np.asarray(data.site_xmat[int(site_id)]).reshape(3, 3)
                     error = np.r_[target_position - current_position,
@@ -572,10 +583,29 @@ class RoboCasaSession:
                     self._enforce_joint_limits(model, data, qpos_ids)
                     mujoco.mj_forward(model, data)
                 if not solved:
-                    raise ValueError(f"ik_failed:{len(solutions)}")
+                    failure = SimError(
+                        "ik_failed",
+                        index=index,
+                        pos_err=round(float(np.linalg.norm(error[:3])), 5),
+                        rot_err=round(float(np.linalg.norm(error[3:])), 5),
+                        iters=iterations,
+                        target_pos=[round(float(v), 4) for v in waypoint["position"]],
+                        target_quat=[round(float(v), 4) for v in waypoint["orientation"]],
+                    )
+                    print(f"[robocasa] {failure.code} at waypoint {index}: {failure.details}", flush=True)
+                    raise failure
                 solution = np.array(data.qpos[qpos_ids], copy=True)
-                if np.max(np.abs(solution - seed)) > jump_limit:
-                    raise ValueError(f"joint_jump_violation:{len(solutions)}")
+                jump = float(np.max(np.abs(solution - seed)))
+                if jump > jump_limit:
+                    failure = SimError(
+                        "joint_jump_violation",
+                        index=index,
+                        jump=round(jump, 5),
+                        target_pos=[round(float(v), 4) for v in waypoint["position"]],
+                        target_quat=[round(float(v), 4) for v in waypoint["orientation"]],
+                    )
+                    print(f"[robocasa] {failure.code} at waypoint {index}: {failure.details}", flush=True)
+                    raise failure
                 solutions.append(solution.tolist())
                 seed = solution
         finally:

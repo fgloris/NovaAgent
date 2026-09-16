@@ -11,7 +11,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from nova_interfaces.action import MCPExecute
 from nova_interfaces.msg import ExecutorHeartbeat, ToolDescriptor
-from .trajectory import Pose, validate_waypoints, compose, interpolate, normalize
+from .trajectory import Pose, validate_waypoints, compose, interpolate, normalize, describe_failure
 from .ros_backend import RosEEFBackend
 
 TOOLS = {
@@ -163,7 +163,7 @@ class ExecutorRawNode(Node):
                             for i in range(3)
                         ):
                             raise ValueError("workspace_violation")
-                traj = interpolate(
+                traj, segments = interpolate(
                     poses,
                     min(float(p.get("max_linear_speed", b.get("max_linear_speed", 0.2))),b.get("max_linear_speed", 0.2)),
                     min(float(p.get("max_angular_speed", b.get("max_angular_speed", 1.0))),b.get("max_angular_speed", 1.0)),
@@ -188,6 +188,14 @@ class ExecutorRawNode(Node):
                 r = MCPExecute.Result()
                 r.success = out.get("success", False)
                 r.error = out.get("error", "")
+                if not r.success:
+                    detail = describe_failure(r.error, segments, poses)
+                    if detail:
+                        r.error = detail["message"]
+                        out["error"] = detail["message"]
+                        out["failed_waypoint"] = detail["failed_waypoint"]
+                        out["failed_segment"] = detail["failed_segment"]
+                        out["diagnostics"] = detail["diagnostics"]
                 r.result_json = json.dumps(out)
                 goal_handle.canceled() if r.error == "cancelled" else (
                     goal_handle.succeed() if r.success else goal_handle.abort()

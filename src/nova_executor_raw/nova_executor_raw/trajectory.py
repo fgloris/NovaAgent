@@ -1,5 +1,6 @@
 """纯 Python 位姿校验与插值工具。"""
 
+import json
 import math
 from dataclasses import dataclass
 
@@ -86,12 +87,17 @@ def interpolate(poses, linear_speed=0.1, angular_speed=0.5, gripper_speed=1.0, h
     每段先完成位置/姿态运动(时长取"位移/线速度""转角/角速度""1/hz"最大值),
     再在到达位置后用"夹爪行程/夹爪速度"的时间完成夹爪开合,保证先到位再闭合。
     未指定夹爪的路径点沿用最近一次显式值(含起点)。
+
+    返回 (轨迹点列表, 每点所属段索引);段 s 表示 poses[s] -> poses[s+1],
+    故段 s 对应第 s+1 个 waypoint(poses[0] 为起点)。
     """
     if not poses:
         raise ValueError("empty_waypoints")
     out = []
+    segments = []
     grip = poses[0].gripper
-    for a, b in zip(poses, poses[1:]):
+    for seg_index, (a, b) in enumerate(zip(poses, poses[1:])):
+        start_len = len(out)
         target = b.gripper if b.gripper is not None else grip
         # 运动阶段:位置线性、姿态 slerp,夹爪保持段起点值
         d = math.sqrt(sum((b.position[i] - a.position[i]) ** 2 for i in range(3)))
@@ -124,10 +130,70 @@ def interpolate(poses, linear_speed=0.1, angular_speed=0.5, gripper_speed=1.0, h
                     )
                 )
             out.append(Pose(list(b.position), list(b.orientation), target))
+        segments.extend([seg_index] * (len(out) - start_len))
         grip = target
     last = poses[-1]
     out.append(Pose(list(last.position), list(last.orientation), grip))
-    return out
+    segments.append(max(0, len(poses) - 2))
+    return out, segments
+
+
+def _fmt_vec(values):
+    """把数值序列格式化成 [a, b, c] 形式,便于放进面向调用方的错误信息。"""
+    return "[" + ", ".join(f"{float(v):.3f}" for v in values) + "]"
+
+
+def _parse_error(error):
+    """把错误负载解析成 dict:已是 dict 直接用,JSON 字符串则解析,其余返回 None。"""
+    if isinstance(error, dict):
+        return error
+    if isinstance(error, str):
+        try:
+            parsed = json.loads(error)
+        except (TypeError, ValueError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _hint(payload, *keys):
+    """把指定诊断字段格式化成 ' (k=v, ...)';无可用字段时返回空串。"""
+    pairs = [f"{key}={payload[key]}" for key in keys if key in payload]
+    return f" ({', '.join(pairs)})" if pairs else ""
+
+
+def describe_failure(error, segments, poses):
+    """把后端结构化的失败信息渲染成面向调用方的中文说明。
+
+    error 为 SimError 序列化后的 JSON 字符串(或 dict),形如
+    '{"code": "ik_failed", "index": 3, "pos_err": 0.05, "rot_err": 0.03}';
+    segments 为 interpolate 返回的轨迹点->段映射,poses 为插值前的路径点。
+    返回 {message, failed_waypoint, failed_segment, diagnostics},无法识别时返回 None。
+    """
+    payload = _parse_error(error)
+    if not payload:
+        return None
+    code, index = payload.get("code"), payload.get("index")
+    if code not in ("ik_failed", "joint_jump_violation") or not isinstance(index, int):
+        return None
+    if not segments or index < 0 or index >= len(segments):
+        return None
+    seg = segments[index]
+    target_index = seg + 1
+    if target_index >= len(poses):
+        return None
+    target = poses[target_index]
+    where = f"第{target_index}个waypoint {_fmt_vec(target.position)} {_fmt_vec(target.orientation)}"
+    if code == "ik_failed":
+        message = f"{where} 由于ik failed不可达{_hint(payload, 'pos_err', 'rot_err')}"
+    else:
+        message = f"第{target_index}个waypoint前发生了关节跳变{_hint(payload, 'jump')}"
+    return {
+        "message": message,
+        "failed_waypoint": target_index,
+        "failed_segment": seg,
+        "diagnostics": payload,
+    }
 
 
 def validate_waypoints(data, max_count=100):
