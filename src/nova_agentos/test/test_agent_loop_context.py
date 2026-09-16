@@ -185,8 +185,17 @@ def test_local_image_tools_list_and_fetch(tmp_path):
     runner, processed = _runner_with_memory(tmp_path)
     listing = runner._list_accessible_images({})
     assert processed.url in listing and "visualize_grid" in listing
+
+    before = len(runner.images.processed_records())
     text, images = runner._fetch_history_image({"time": 100.0, "topic": "camA"})
-    assert list(images) and "camA" in text
+    assert images == {}  # 不再走 runtime 注入,靠 processed 段
+    records = runner.images.processed_records()
+    assert len(records) == before + 1
+    fetched = records[-1]
+    assert fetched.tool == "fetch_history_image"
+    assert "fetch_history_image" in fetched.note
+    assert fetched.base  # 指向原历史图
+    assert "fetch_history_image" in text
 
 
 def test_activate_session_preheats_image_memory(tmp_path):

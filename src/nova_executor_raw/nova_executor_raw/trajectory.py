@@ -57,7 +57,7 @@ def compose(base, delta):
     return Pose(
         [base.position[i] + r[i] for i in range(3)],
         normalize(quat_mul(base.orientation, delta.orientation)),
-        delta.gripper,
+        delta.gripper if delta.gripper is not None else base.gripper,
     )
 
 
@@ -89,7 +89,11 @@ def interpolate(poses, linear_speed=0.1, angular_speed=0.5, hz=20):
     if not poses:
         raise ValueError("empty_waypoints")
     out = []
+    # 夹爪沿轨迹保持:未指定的路径点沿用最近一次显式夹爪值(含起点)
+    grip = poses[0].gripper
     for a, b in zip(poses, poses[1:]):
+        if b.gripper is not None:
+            grip = b.gripper
         d = math.sqrt(sum((b.position[i] - a.position[i]) ** 2 for i in range(3)))
         qd = abs(sum(x * y for x, y in zip(a.orientation, b.orientation)))
         ang = 2 * math.acos(max(-1, min(1, qd)))
@@ -104,10 +108,11 @@ def interpolate(poses, linear_speed=0.1, angular_speed=0.5, hz=20):
                         for k in range(3)
                     ],
                     slerp(a.orientation, b.orientation, t),
-                    b.gripper if b.gripper is not None else a.gripper,
+                    grip,
                 )
             )
-    out.append(poses[-1])
+    last = poses[-1]
+    out.append(Pose(list(last.position), list(last.orientation), grip))
     return out
 
 

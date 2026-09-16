@@ -19,6 +19,10 @@ from nova_common.env_bridge import EnvBridgeBase
 from nova_interfaces.action import EEFExecute
 from nova_robot_description import load_robot_description, to_json, to_markdown
 
+# 规范动作向量 [pos3,rot3,gripper,base4,control_mode] 里夹爪的下标
+_GRIPPER_INDEX = 6
+_DEFAULT_GRIPPER = -1.0  # robocasa: <0.5 为张开, >=0.5 为闭合
+
 
 class RoboCasaBridgeNode(EnvBridgeBase):
     """RoboCasa 环境桥:额外提供 EEF 轨迹 action 与 /{robot}/eef_pose 等状态话题。"""
@@ -31,6 +35,8 @@ class RoboCasaBridgeNode(EnvBridgeBase):
         self._trajectory_lock = threading.Lock()
         self._control_active = threading.Event()
         self.robot_state: dict[str, Any] | None = None
+        # 最近一次夹爪命令:空闲零动作与缺省路径点都沿用它,避免夹爪被自动张开
+        self._last_gripper = _DEFAULT_GRIPPER
         self.declare_parameter("env_id", "robocasa/PickPlaceCounterToCabinet")
         self.declare_parameter("seed", 0)
         self.env_id = str(self.get_parameter("env_id").value)
@@ -112,6 +118,7 @@ class RoboCasaBridgeNode(EnvBridgeBase):
 
     def _reset_env(self) -> None:
         """加请求锁执行 reset,避免与 EEF 控制并发访问 sim server。"""
+        self._last_gripper = _DEFAULT_GRIPPER
         with self._request_lock:
             super()._reset_env()
 
@@ -171,16 +178,33 @@ class RoboCasaBridgeNode(EnvBridgeBase):
             msg.data = [float(value) for value in gripper]
             self.gripper_pub.publish(msg)
 
-    @staticmethod
-    def _waypoint_dict(waypoint) -> dict[str, Any]:
-        """把 EEFWaypoint 消息转成 sim server 需要的 dict(可选带 gripper)。"""
-        item = {
+    def _zero_action(self):
+        """空闲零动作:臂保持静止,但夹爪沿用最近命令(否则 robocasa 会把 0 当张开)。"""
+        action = super()._zero_action()
+        if action is not None and len(action) > _GRIPPER_INDEX:
+            action = np.array(action, dtype=np.float32)
+            action[_GRIPPER_INDEX] = self._last_gripper
+        return action
+
+    def action_callback(self, msg: Float32MultiArray) -> None:
+        """记录普通动作里的夹爪命令,再交给基类暂存。"""
+        try:
+            values = np.asarray(msg.data, dtype=np.float32)
+            if values.size > _GRIPPER_INDEX:
+                self._last_gripper = float(np.clip(values[_GRIPPER_INDEX], -1.0, 1.0))
+        except Exception:
+            pass
+        super().action_callback(msg)
+
+    def _waypoint_dict(self, waypoint) -> dict[str, Any]:
+        """把 EEFWaypoint 消息转成 sim server 需要的 dict;缺省夹爪沿用最近命令。"""
+        if waypoint.has_gripper:
+            self._last_gripper = float(np.clip(waypoint.gripper, -1.0, 1.0))
+        return {
             "position": [float(value) for value in waypoint.position],
             "orientation": [float(value) for value in waypoint.orientation],
+            "gripper": self._last_gripper,
         }
-        if waypoint.has_gripper:
-            item["gripper"] = float(waypoint.gripper)
-        return item
 
     def _execute_eef(self, goal_handle):
         """执行 EEF 轨迹 action:先校验轨迹,再逐点 step_eef 并持续发布反馈。"""

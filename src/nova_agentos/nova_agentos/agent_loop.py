@@ -330,6 +330,7 @@ class TaskRunner:
         return json.dumps(payload, ensure_ascii=False)
 
     def _fetch_history_image(self, args: dict) -> tuple[str, dict[str, str]]:
+        """调取时间最近的历史图,提升为 processed(与其它工具图同语义,可再次引用)。"""
         if self.images is None:
             return "图像记忆未启用", {}
         camera = str(args.get("topic", ""))
@@ -340,7 +341,20 @@ class TaskRunner:
         record = self.images.nearest_history(camera, ts)
         if record is None:
             return f"未找到链路 {camera} 的历史图像", {}
-        return json.dumps(record.describe(), ensure_ascii=False), {record.url: self.images.data_url(record)}
+        try:
+            jpeg_bytes = self.images.path_of(record).read_bytes()
+        except OSError as exc:
+            return f"历史图像读取失败: {exc}", {}
+        fetched = self.images.save_processed(
+            jpeg_bytes,
+            record.camera,
+            "fetch_history_image",
+            {"time": round(ts, 3), "topic": camera},
+            record.url,
+            time.time(),
+            note="这是由 fetch_history_image 工具从历史图像调取的图片",
+        )
+        return json.dumps(fetched.describe(), ensure_ascii=False), {}
 
     def _image_context(self) -> list[dict]:
         """构建动态图像段:current -> processed -> history(每链路最近 N 张)。"""

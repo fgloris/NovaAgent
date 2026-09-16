@@ -99,6 +99,12 @@ class RobotStateObserver:
 
         return cb
 
+    def gripper_state(self) -> list[float] | None:
+        """返回最新夹爪关节位置;无数据时返回 None(供图像去重门控使用)。"""
+        with self._lock:
+            gripper = self._gripper
+        return list(gripper[0]) if gripper is not None else None
+
     def snapshot_message(self) -> dict | None:
         """返回一条机器人状态观测消息;三路状态均未到达时返回 None。"""
         with self._lock:

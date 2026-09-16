@@ -8,6 +8,9 @@ nova_agentos:
     image_sample_period_sec: 1.0
     # 去重阈值:与上一张已存图的归一化 MSE 低于此值则跳过保存(0 = 每帧都存)
     image_diff_mse_threshold: 0.0005
+    # 状态去重阈值:夹爪关节位置与上一快照的最大差低于此值才允许跳过
+    # (画面与夹爪都几乎不变才跳过;夹爪动作幅度小、画面 MSE 反映不出,故单列)
+    image_state_diff_threshold: 0.005
     # 注入 context 时每条链路保留的历史图数量
     image_history_depth: 4
     # 磁盘上每条链路最多保留的历史图数量(超出删最旧)

@@ -99,6 +99,8 @@ class ImageRecord:
             out["tool"] = self.tool
             out["params"] = self.params
             out["base"] = self.base
+        if self.note:
+            out["note"] = self.note
         return out
 
 
@@ -161,6 +163,48 @@ class ImageMemory:
             self._unlink(old)
         return record
 
+    def save_snapshot(
+        self, frames: dict[str, tuple[np.ndarray, float]], state: list[float] | None = None
+    ) -> list[ImageRecord] | None:
+        """全局快照去重:所有链路画面与状态都几乎不变时跳过;否则整组保存。
+
+        门控 = (所有链路归一化 MSE < diff_mse_threshold) 且
+               (state 与上次快照的 max|Δ| < state_diff_threshold)。
+        当前 state 只喂夹爪;无 state 时退化为纯视觉去重。
+        """
+        if not frames:
+            return None
+        with self._lock:
+            changed = any(
+                self._last_frames.get(camera) is None
+                or self._diff(self._last_frames[camera], frame) >= self.diff_mse_threshold
+                for camera, (frame, _stamp) in frames.items()
+            )
+            if not changed and state is not None and self._last_state is not None:
+                delta = max(
+                    (abs(a - b) for a, b in zip(state, self._last_state)), default=0.0
+                )
+                changed = delta >= self.state_diff_threshold
+        if not changed:
+            return None
+        records: list[ImageRecord] = []
+        for camera, (frame, stamp) in frames.items():
+            filename = f"{int(stamp * 1000)}-{camera}.jpg"
+            record = self._write(KIND_HISTORY, filename, camera, frame, stamp, ORIGIN_RAW)
+            with self._lock:
+                self._last_frames[camera] = frame
+                items = self._history.setdefault(camera, [])
+                items.append(record)
+                removed = items[: max(0, len(items) - self.link_max)]
+                del items[: len(removed)]
+            for old in removed:
+                self._unlink(old)
+            records.append(record)
+        if state is not None:
+            with self._lock:
+                self._last_state = list(state)
+        return records
+
     def save_processed(
         self,
         jpeg_bytes: bytes,
@@ -169,8 +213,9 @@ class ImageMemory:
         params: dict,
         base_url: str,
         ts: float,
+        note: str = "",
     ) -> ImageRecord:
-        """保存工具返回图(JPEG 字节),并记录工具来源与底图。"""
+        """保存工具返回图(JPEG 字节),并记录工具来源、底图与可选说明。"""
         with self._lock:
             self._seq += 1
             seq = self._seq
@@ -189,6 +234,7 @@ class ImageMemory:
             tool=tool,
             params=params,
             base=base_url,
+            note=note,
         )
         image_codec.save_jpeg_bytes_with_metadata(path, jpeg_bytes, record.to_meta())
         with self._lock:
@@ -343,6 +389,7 @@ class ImageMemory:
                 tool=str(meta.get("tool", "")),
                 params=dict(meta.get("params") or {}),
                 base=str(meta.get("base", "")),
+                note=str(meta.get("note", "")),
             )
         except (TypeError, ValueError):
             return None

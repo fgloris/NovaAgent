@@ -60,3 +60,22 @@ def test_refresh_current_overwrites_and_tracks_camera(tmp_path):
     assert records[0].camera == "camA"
     assert records[0].time == 101.0
     assert records[0].url == "file://current/camA.jpg"
+
+
+def test_snapshot_gate_requires_all_links_and_state_unchanged(tmp_path):
+    memory = ImageMemory(tmp_path, diff_mse_threshold=0.0005, state_diff_threshold=0.005)
+    a, b = _frame(10), _frame(11)
+    frames = {"camA": (a, 1.0), "camB": (b, 1.0)}
+
+    assert memory.save_snapshot(frames, [0.04]) is not None  # 首帧保存
+    # 画面与夹爪都不变 -> 跳过
+    same = {"camA": (a.copy(), 2.0), "camB": (b.copy(), 2.0)}
+    assert memory.save_snapshot(same, [0.04]) is None
+    # 画面不变但夹爪变化 -> 保存(夹爪动作幅度小,MSE 反映不出)
+    assert memory.save_snapshot(same, [0.0]) is not None
+    # 夹爪不变但某一路画面变化 -> 保存整组
+    changed = {"camA": (a.copy(), 4.0), "camB": (b.copy(), 4.0)}
+    changed["camA"][0][:] = 255
+    assert memory.save_snapshot(changed, [0.0]) is not None
+    assert len(memory.history_records("camA", 10)) == 3
+    assert len(memory.history_records("camB", 10)) == 3

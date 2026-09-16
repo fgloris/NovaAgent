@@ -69,6 +69,7 @@ class AgentosNode(Node):
         self.declare_parameter("memory_dir", "")
         self.declare_parameter("image_sample_period_sec", 1.0)
         self.declare_parameter("image_diff_mse_threshold", 0.0005)
+        self.declare_parameter("image_state_diff_threshold", 0.005)
         self.declare_parameter("image_history_depth", 4)
         self.declare_parameter("image_link_max", 60)
         self.declare_parameter("image_processed_max", 16)
@@ -116,6 +117,7 @@ class AgentosNode(Node):
         self._image_link_max = max(1, int(self.get_parameter("image_link_max").value))
         self._image_processed_max = max(1, int(self.get_parameter("image_processed_max").value))
         self._image_diff_mse = float(self.get_parameter("image_diff_mse_threshold").value)
+        self._image_state_diff = float(self.get_parameter("image_state_diff_threshold").value)
         self._image_max_size = int(self.get_parameter("vlm_max_image_size").value)
         self._image_jpeg_quality = int(self.get_parameter("vlm_jpeg_quality").value)
 
@@ -143,6 +145,7 @@ class AgentosNode(Node):
             self,
             self.vision.latest_frames,
             self.loop.current_memory,
+            state_provider=self.robot_state.gripper_state,
             period_sec=float(self.get_parameter("image_sample_period_sec").value),
         )
 
@@ -169,6 +172,7 @@ class AgentosNode(Node):
                 jpeg_quality=self._image_jpeg_quality,
                 max_size=self._image_max_size,
                 diff_mse_threshold=self._image_diff_mse,
+                state_diff_threshold=self._image_state_diff,
             )
             self._memory_cache[session_id] = memory
         return memory

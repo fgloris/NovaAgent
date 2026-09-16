@@ -36,6 +36,8 @@ class RosEEFBackend:
         self._lock = threading.Lock()
         self._pose: Pose | None = None
         self._joints: dict = {"name": [], "position": [], "velocity": []}
+        # 最近一次夹爪命令:新轨迹未指定夹爪时沿用它,避免"缺省=张开"
+        self._last_gripper: float | None = None
         group = ReentrantCallbackGroup()
         self.client = ActionClient(node, EEFExecute, action_name, callback_group=group)
         node.create_subscription(
@@ -88,7 +90,8 @@ class RosEEFBackend:
             if not self.client.server_is_ready():
                 raise RuntimeError("backend_unavailable")
             raise RuntimeError("eef_state_unavailable")
-        return Pose(list(pose.position), list(pose.orientation), pose.gripper)
+        # 起点带上最近一次夹爪命令,保证轨迹缺省时保持夹爪
+        return Pose(list(pose.position), list(pose.orientation), self._last_gripper)
 
     def transform_pose(self, pose: Pose, source: str, target: str) -> Pose:
         """坐标系转换占位实现:当前仅支持同一坐标系,否则抛 frame_unavailable。"""
@@ -126,6 +129,10 @@ class RosEEFBackend:
         if not self.client.wait_for_server(timeout_sec=0.1):
             return {"success": False, "error": "backend_unavailable"}
         constraints = constraints or {}
+        # 记录本轨迹中最后一次显式夹爪命令,供后续缺省轨迹沿用
+        for pose in trajectory:
+            if pose.gripper is not None:
+                self._last_gripper = float(pose.gripper)
         goal = EEFExecute.Goal()
         goal.robot_id = self.robot_id
         goal.frame_id = f"{self.robot_id}_base"

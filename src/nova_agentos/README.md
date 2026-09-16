@@ -39,9 +39,9 @@ agentos 是图像记忆的唯一持有者,perception executor 无状态、按 `f
 - 落盘根目录 `memory_dir`(默认 `~/.cache/nova_agentos/memory`),每个 session 一个子目录:
   `current/<camera>.jpg`(最新帧)、`history/<epoch_ms>-<camera>.jpg`(采样历史)、`processed/<epoch_ms>-<camera>-<seq>.jpg`(工具返回图)。
 - 元信息(相机/时间/来源/底图)写在 JPEG COM 段;模型只看到 `file://<kind>/<file>`。
-- `ImageSampler` 每 `image_sample_period_sec` 采样一次,与上一张归一化 MSE 低于阈值则跳过。
+- `ImageSampler` 每 `image_sample_period_sec` 采样一次;仅当**所有链路**画面归一化 MSE 低于 `image_diff_mse_threshold` **且**夹爪状态差低于 `image_state_diff_threshold` 时才跳过,否则整组落盘(夹爪动作幅度小、画面 MSE 反映不出,故单列)。
 - 每轮 context 动态尾部依次注入 current → processed → history 图段,最后追加时间戳(保留稳定前缀以提升缓存命中)。
-- 模型可调本地工具 `list_accessible_images(history_depth=N)` 与 `fetch_history_image(time, topic)`。
+- 模型可调本地工具 `list_accessible_images(history_depth=N)` 与 `fetch_history_image(time, topic)`;fetch 会把历史图提升为 processed(与其它工具图同语义,描述里带 `note` 说明来源)。
 - 调用 perception 工具时,agentos 自动注入隐藏参数 `image_root` 并把相机名解析为对应 current 图。
 
 ## Skill 说明
