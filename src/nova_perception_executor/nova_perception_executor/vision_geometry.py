@@ -85,31 +85,54 @@ def parse_pixel(text):
 
 # ---------- 图像标注 ----------
 
-# 网格编号渲染:字号随格子大小缩放;低于该下限(≈此前默认小字)就放弃渲染编号
+# 网格编号渲染:字号随格子大小缩放,并夹在上下界之间
 _LABEL_MIN_PX = 11
+_LABEL_MAX_PX = 48
 _LABEL_FONT_SCALE = 0.5  # 字号约为格子短边的比例
 
+# 默认字体探测顺序:优先含 CJK 的 Noto Sans CJK SC(ttc index=2),再退到纯拉丁字体
+_FONT_CANDIDATES = (
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 2),
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
+    ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 0),
+    ("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", 0),
+)
+_FONT_CACHE: dict[tuple[str, int, int], object] = {}
 
-def _load_grid_font(px):
-    """按像素高度加载 TrueType 字体(只有它才能缩放字号);找不到可用字体时返回 None(退化为默认小字)。"""
+
+def _load_grid_font(px, path=None, index=0):
+    """按像素高度加载 TrueType 字体;path 为空时自动探测(优先 CJK);找不到返回 None。"""
     try:
         from PIL import ImageFont
     except Exception:
         return None
-    for path in (
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-    ):
-        try:
-            return ImageFont.truetype(path, px)
-        except Exception:
+    px = int(px)
+    candidates = ((str(path), int(index)),) if path else ()
+    candidates = candidates + _FONT_CANDIDATES
+    for cand_path, cand_index in candidates:
+        key = (cand_path, cand_index, px)
+        if key in _FONT_CACHE:
+            font = _FONT_CACHE[key]
+            if font is not None:
+                return font
             continue
+        try:
+            font = ImageFont.truetype(cand_path, px, index=cand_index)
+        except Exception:
+            font = None
+        _FONT_CACHE[key] = font
+        if font is not None:
+            return font
     return None
 
 
-def draw_grid(img, grid_size, line_color=(200, 200, 200), label_color=(0, 200, 0)):
-    """在图像上叠加 grid_size×grid_size 网格线,并在每格中心渲染 "行-列" 编号。"""
+def draw_grid(img, grid_size, line_color=(200, 200, 200), label_color=(0, 200, 0),
+              font_scale=_LABEL_FONT_SCALE, font_min_px=_LABEL_MIN_PX,
+              font_max_px=_LABEL_MAX_PX, font_path=None, font_index=0):
+    """在图像上叠加 grid_size×grid_size 网格线,并在每格中心渲染 "行-列" 编号。
+
+    编号字号 = clip(格子短边 × font_scale, font_min_px, font_max_px)。
+    """
     out = img.copy()
     h, w = out.shape[:2]
     for i in range(1, grid_size):
@@ -118,11 +141,9 @@ def draw_grid(img, grid_size, line_color=(200, 200, 200), label_color=(0, 200, 0
         out[y, :] = line_color
         out[:, x] = line_color
     cell_h, cell_w = h / grid_size, w / grid_size
-    px = int(round(min(cell_h, cell_w) * _LABEL_FONT_SCALE))
-    if px < _LABEL_MIN_PX:
-        # 字号太小(低于当前可用最小字号),放弃渲染编号,只留网格线
-        return out
-    font = _load_grid_font(px)
+    px = int(np.clip(round(min(cell_h, cell_w) * float(font_scale)),
+                     int(font_min_px), int(font_max_px)))
+    font = _load_grid_font(px, path=font_path, index=font_index)
     for r in range(grid_size):
         for c in range(grid_size):
             # 标签顺序与提示词/parse_grid_cell 一致:行-列(r+1 行, c+1 列)
@@ -133,7 +154,8 @@ def draw_grid(img, grid_size, line_color=(200, 200, 200), label_color=(0, 200, 0
     return out
 
 
-def draw_marker(img, pixel, color, radius=8, label=None):
+def draw_marker(img, pixel, color, radius=8, label=None, font_px=None,
+                ring_ratio=0.25, font_path=None, font_index=0):
     """在像素位置画空心圆圈标记(仅外圈着色),不遮挡圈内物体;可选在圈上方加标签。"""
     out = img.copy()
     u, v = float(pixel[0]), float(pixel[1])
@@ -146,11 +168,12 @@ def draw_marker(img, pixel, color, radius=8, label=None):
     cv = int(np.clip(cv, 0, h - 1))
     rr, cc = np.ogrid[:h, :w]
     d2 = (rr - cv) ** 2 + (cc - cu) ** 2
-    thick = max(1, int(round(radius * 0.25)))
+    thick = max(1, int(round(radius * float(ring_ratio))))
     ring = (d2 <= radius * radius) & (d2 >= (radius - thick) ** 2)
     out[ring] = color
     if label:
-        _put_label(out, label, cu, max(cv - radius - 8, 0), color)
+        font = _load_grid_font(font_px, path=font_path, index=font_index) if font_px else None
+        _put_label(out, label, cu, max(cv - radius - 8, 0), color, font=font)
     return out
 
 
@@ -162,9 +185,9 @@ def _put_label(img, text, x, y, color, font=None):
         pil = Image.fromarray(img)
         draw = ImageDraw.Draw(pil)
         if font is not None:
-            l, t, r, b = draw.textbbox((0, 0), text, font=font)
-            x = int(x - (r - l) / 2)
-            y = int(y - (b - t) / 2)
+            left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+            x = int(x - (right - left) / 2)
+            y = int(y - (bottom - top) / 2)
             draw.text((x, y), text, fill=tuple(int(c) for c in color), font=font)
         else:
             draw.text((x, y), text, fill=tuple(int(c) for c in color))
@@ -393,9 +416,9 @@ def build_sphere(center, radius, color=(255, 220, 0), segments=16, rings=8):
     return mesh.as_arrays()
 
 
-def build_frame(origin, orientation, axis_length=0.1, radius=0.006, segments=16):
-    """在 origin/orientation 处构建 x/y/z 三色箭头(base 系),颜色红/绿/蓝。"""
-    colors = ((255, 70, 70), (70, 200, 70), (70, 120, 255))
+def build_frame(origin, orientation, axis_length=0.1, radius=0.006, segments=16,
+                colors=((255, 70, 70), (70, 200, 70), (70, 120, 255))):
+    """在 origin/orientation 处构建 x/y/z 三色箭头(base 系),颜色默认红/绿/蓝。"""
     axes = (
         quat_to_matrix_xyzw(orientation) @ np.array([1.0, 0.0, 0.0]),
         quat_to_matrix_xyzw(orientation) @ np.array([0.0, 1.0, 0.0]),
@@ -425,8 +448,12 @@ def _axis_to_quat(axis):
 
 def rasterize_mesh(img, vertices, faces, colors, intrinsics, projection,
                    alpha=0.45, supersample=2, outline=True, outline_width=2,
-                   outline_color=(0, 0, 0)):
-    """画家算法光栅化:深度排序 + 光照 + 超采样 alpha 合成;可选按 alpha 膨胀描边。"""
+                   outline_color=(0, 0, 0), shade=True, light=(0.3, -0.5, 1.0),
+                   shade_min=0.5):
+    """画家算法光栅化:深度排序 + 光照 + 超采样 alpha 合成;可选按 alpha 膨胀描边。
+
+    shade=False 时不做明暗(纯色);shade_min 控制暗面最暗亮度。
+    """
     from PIL import Image, ImageDraw, ImageFilter
 
     K = np.asarray(intrinsics, dtype=float).reshape(3, 3)
@@ -444,8 +471,9 @@ def rasterize_mesh(img, vertices, faces, colors, intrinsics, projection,
     ss = max(1, int(supersample))
     overlay = Image.new("RGBA", (w * ss, h * ss), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    light = np.array([0.3, -0.5, 1.0])
+    light = np.asarray(light, dtype=float)
     light = light / np.linalg.norm(light)
+    shade_min = float(np.clip(shade_min, 0.0, 1.0))
     order = []
     for fi, tri in enumerate(faces):
         i0, i1, i2 = int(tri[0]), int(tri[1]), int(tri[2])
@@ -463,8 +491,11 @@ def rasterize_mesh(img, vertices, faces, colors, intrinsics, projection,
     order.sort(key=lambda item: -item[0])  # 远的先画(画家算法,半透明双面叠加)
     for _, fi, normal in order:
         i0, i1, i2 = (int(x) for x in faces[fi])
-        shade = 0.5 + 0.5 * max(0.0, float(np.dot(normal, light)))
-        r, g, b = (np.clip(np.asarray(colors[fi], dtype=float) * shade, 0, 255)).tolist()
+        if shade:
+            factor = shade_min + (1.0 - shade_min) * max(0.0, float(np.dot(normal, light)))
+        else:
+            factor = 1.0
+        r, g, b = (np.clip(np.asarray(colors[fi], dtype=float) * factor, 0, 255)).tolist()
         pts = [(float(u[i]) * ss, float(v[i]) * ss) for i in (i0, i1, i2)]
         draw.polygon(pts, fill=(int(r), int(g), int(b), int(round(255 * alpha))))
     if outline and float(outline_width) > 0:
@@ -494,21 +525,47 @@ def label_origin(box, center, width, height, pad=0):
     return x0, y0
 
 
-def draw_label(img, pixel, text, color=(255, 255, 255), font_px=18):
+def draw_label(img, pixel, text, color=(255, 255, 255), font_px=18,
+               font_path=None, font_index=0, stroke_width=2, stroke_fill=(0, 0, 0)):
     """在像素位置绘制带描边的文字标签(居中),并夹取到图像范围内。"""
     if pixel is None:
         return img
     from PIL import Image, ImageDraw
-    font = _load_grid_font(int(font_px))
+    font = _load_grid_font(int(font_px), path=font_path, index=font_index)
     out = Image.fromarray(img)
     draw = ImageDraw.Draw(out)
     h, w = img.shape[:2]
-    stroke = 2 if font is not None else 0
+    stroke = int(stroke_width) if font is not None else 0
     box = draw.textbbox((0, 0), text, font=font) if font is not None else draw.textbbox((0, 0), text)
     x0, y0 = label_origin(box, pixel, w, h, pad=stroke)
     if font is not None:
         draw.text((x0, y0), text, fill=tuple(int(c) for c in color), font=font,
-                  stroke_width=stroke, stroke_fill=(0, 0, 0))
+                  stroke_width=stroke, stroke_fill=tuple(int(c) for c in stroke_fill))
     else:
         draw.text((x0, y0), text, fill=tuple(int(c) for c in color))
+    return np.asarray(out)
+
+
+def draw_label_below(img, pixel, text, color=(255, 255, 255), font_px=18, offset=0,
+                     font_path=None, font_index=0, stroke_width=2, stroke_fill=(0, 0, 0)):
+    """在像素位置正下方绘制文字:水平居中于该像素,顶端从 pixel_y+offset 开始(不遮挡标记点)。
+
+    不做包围盒居中计算,直接用 PIL anchor="ma"(水平居中、ascender 顶端);
+    v 夹取到图像底边内(用 font_px 近似高度)。
+    """
+    if pixel is None:
+        return img
+    from PIL import Image, ImageDraw
+    font = _load_grid_font(int(font_px), path=font_path, index=font_index)
+    out = Image.fromarray(img)
+    draw = ImageDraw.Draw(out)
+    h, w = img.shape[:2]
+    u = min(max(float(pixel[0]), 0.0), float(w))
+    v = min(float(pixel[1]) + float(offset), max(0.0, h - float(font_px)))
+    if font is not None:
+        draw.text((u, v), text, fill=tuple(int(c) for c in color), font=font,
+                  anchor="ma", stroke_width=int(stroke_width),
+                  stroke_fill=tuple(int(c) for c in stroke_fill))
+    else:
+        draw.text((u, v), text, fill=tuple(int(c) for c in color))
     return np.asarray(out)

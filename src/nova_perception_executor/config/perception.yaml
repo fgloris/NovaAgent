@@ -1,33 +1,85 @@
 nova_perception_executor:
   ros__parameters:
+    # 图例:[模型可见] 表示该参数会作为工具参数暴露给模型;其值即模型不传时的默认值
+    #       (通过工具 schema 的 default 字段告知模型)。未标记的仅节点内部使用。
+
+    # ==================== 环境/发现 ====================
     # 启动即订阅的相机(其余相机会从 /nova/env/obs 自动发现并补订阅)
     camera_names: ["robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand"]
-
     # 图像输入话题:不填时按 {env_ns}/camera/{name}/image_raw 推导;
     # 显式填写时必须与 camera_names 一一对应(顺序一致)
     image_topics: []
-
-    # 环境命名空间(推导图像话题与 /nova/env/info 服务用)
     env_ns: "/nova/env"
-
     heartbeat_rate_hz: 1.0
+    # VLM 显示分辨率最长边;需与 agentos 的 vlm_max_image_size 一致
+    display_max_size: 768
+    draw_topic: "/nova/perception/draw"
+    # 已绘制图缓存上限(按创建顺序淘汰最早的一张)
+    image_cache_size: 20
+    camera_qos_depth: 1
+    camera_qos_reliable: false
 
-    # 工具默认参数(工具调用参数可逐次覆盖)
-    grid_size: 8                          # visualize_grid 默认网格划分
-    display_max_size: 768                 # VLM 显示分辨率最长边;需与 agentos 的 vlm_max_image_size 一致
-    pixel_radius: 12.0                    # visualize_pixels 圆圈半径(显示像素)
+    # ==================== 渲染(公用) ====================
+    draw_alpha: 1.0               # 3D mesh 绘制半透明度(各工具可覆盖)
+    draw_supersample: 2           # 抗锯齿超采样倍数
+    draw_outline: true            # 是否给 3D 网格描边
+    draw_outline_width: 2.0
+    draw_outline_color: [0, 0, 0]
+    draw_light_dir: [0.3, -0.5, 1.0]   # 光照方向(shade=true 时生效)
+    draw_shade_min: 0.5           # 暗面最暗亮度系数
+    inject_image_max_size: 0      # 注入 VLM 的图像最长边(px);0=与输入一致(不缩放)
+    segments: 16                  # 圆周分段数
 
-    # 可视化渲染默认参数(不暴露给模型)
-    draw_topic: "/nova/perception/draw"   # 绘制结果发布话题
-    draw_alpha: 0.60                      # 半透明箭头 alpha
-    draw_supersample: 2                   # 抗锯齿超采样倍数
-    draw_outline: true                    # 是否给箭头描边
-    draw_outline_width: 2.0               # 描边宽度(像素)
-    draw_outline_color: [0, 0, 0]         # 描边颜色(黑)
-    label_font_scale: 10.0                # 标签字号系数(字号只跟箭头半径有关)
-    inject_image_max_size: 0              # 注入 VLM 的图像最长边(px);0=与输入一致(不缩放)
-    arrow_radius: 0.006                   # 箭头杆半径(m);圆锥尺寸只跟它成比例
-    point_radius: 0.02                    # 点小球半径(m)
-    axis_length: 0.1                      # 坐标系轴长(m)
-    segments: 16                          # 圆周分段数
-    image_cache_size: 20                  # 已绘制图 LRU 上限(image_id 可复用)
+    # ==================== 标签(公用) ====================
+    # 绝对像素高(不再随半径变化);各工具可用自己的 label_font_px 覆盖,<=0 时回退此值
+    label_font_px: 32
+    # 字体文件;留空=自动探测(优先 Noto Sans CJK SC,可显示中文)
+    # 推荐: "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+    label_font_path: ""
+    label_font_index: 2           # NotoSansCJK-Regular.ttc 内的 SC 变体
+    label_stroke_width: 2
+    label_stroke_color: [0, 0, 0]
+
+    # ==================== 各工具 ====================
+    visualize_frame:
+      axis_length: 0.1            # [模型可见]
+      radius: 0.006               # [模型可见]
+      labels: true                # [模型可见]
+      label_font_px: 32
+      color_x: "red"
+      color_y: "green"
+      color_z: "blue"
+
+    visualize_point:
+      radius: 0.02                # [模型可见]
+      alpha: 1.0                  # 不透明
+      shade: false                # 去光照,纯色
+      color: red                  # [模型可见] 默认红(调用参数仍可覆盖)
+      label_font_px: 32
+      label_offset_px: 4          # 标签在点正下方,此处为与点边缘的间距
+
+    visualize_segment:
+      radius: 0.006               # [模型可见]
+      show_distance: true         # [模型可见]
+      color: [80, 180, 255]       # [模型可见]
+      label_font_px: 32
+
+    visualize_ray:
+      length: 0.2                 # [模型可见]
+      radius: 0.006               # [模型可见]
+      color: "red"                # [模型可见]
+      label_font_px: 32
+
+    visualize_pixels:
+      radius: 12.0                # [模型可见] 对应模型参数 radius_px
+      ring_ratio: 0.25            # 圈线宽 = 半径 × 该比例
+      color: "red"                # [模型可见]
+      label_font_px: 16
+
+    visualize_grid:
+      grid_size: 8                # [模型可见]
+      label_font_scale: 0.5       # 字号 = 格子短边 × 该比例
+      label_font_min_px: 11       # 下界
+      label_font_max_px: 48       # 上界
+      line_color: [200, 200, 200]
+      label_color: [0, 200, 0]

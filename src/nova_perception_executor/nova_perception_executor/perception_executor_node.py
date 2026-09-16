@@ -9,6 +9,7 @@
   - visualize_grid:在图像上叠加定位网格。
 绘制结果发到绘制话题,并通过 result_json.images 注入 VLM。
 """
+import copy
 import json
 import time
 
@@ -31,7 +32,6 @@ from nova_interfaces.srv import EnvInfo
 from nova_perception_executor import vision_geometry as vg
 
 HEARTBEAT_TOPIC = "/nova/executors/heartbeat"
-_CAM_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
 
 DEFAULT_CAMERAS = ["robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand"]
 
@@ -51,7 +51,7 @@ REPROJECT_SCHEMA = {
         },
         "image_size": {
             "type": "object",
-            "description": "可选:覆盖各相机像素坐标所属的显示分辨率 {相机名: [w, h]}",
+            "description": "可选:覆盖各相机像素坐标所属的显示分辨率 {相机名: [w, h]};不传则自动推断",
             "additionalProperties": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
         },
     },
@@ -71,9 +71,9 @@ VISUALIZE_PIXELS_SCHEMA = {
         },
         "radius_px": {"type": "number", "description": "圆圈半径(显示像素),默认取节点参数"},
         "color": {"description": _COLOR_DESC},
-        "label": {"type": "string", "description": "可选文本标签"},
+        "label": {"type": "string", "description": "可选文本标签;不传则不标注"},
         "image_size": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2,
-                       "description": "可选:覆盖像素坐标所属的显示分辨率 [w, h]"},
+                       "description": "可选:覆盖像素坐标所属的显示分辨率 [w, h];不传则自动推断"},
     },
     "required": ["image", "points"],
 }
@@ -110,7 +110,7 @@ VISUALIZE_POINT_SCHEMA = {
                   "description": "3D 点(base 系 x,y,z,m)"},
         "radius": {"type": "number", "description": "小球半径(m),默认取节点参数"},
         "color": {"description": _COLOR_DESC},
-        "label": {"type": "string", "description": "可选文本标签"},
+        "label": {"type": "string", "description": "可选文本标签;不传则不标注"},
     },
     "required": ["image", "point"],
 }
@@ -127,7 +127,7 @@ VISUALIZE_SEGMENT_SCHEMA = {
         "radius": {"type": "number", "description": _RADIUS_DESC},
         "show_distance": {"type": "boolean", "description": "是否在中点标注 3D 距离,默认 true"},
         "color": {"description": _COLOR_DESC},
-        "label": {"type": "string", "description": "可选文本标签"},
+        "label": {"type": "string", "description": "可选文本标签;不传则不标注"},
     },
     "required": ["image", "points"],
 }
@@ -143,7 +143,7 @@ VISUALIZE_RAY_SCHEMA = {
         "length": {"type": "number", "description": "箭头长度(m),默认 0.2"},
         "radius": {"type": "number", "description": _RADIUS_DESC},
         "color": {"description": _COLOR_DESC},
-        "label": {"type": "string", "description": "可选文本标签"},
+        "label": {"type": "string", "description": "可选文本标签;不传则不标注"},
     },
     "required": ["image", "origin", "orientation"],
 }
@@ -151,7 +151,7 @@ VISUALIZE_RAY_SCHEMA = {
 TOOLS = {
     "reproject_pixels": (
         "多视图像素重投影:输入各相机上目标的像素坐标(显示分辨率,至少 2 个相机),"
-        "用相机投影矩阵 DLT 三角化出 3D 基座系坐标,并返回各视图的重投影像素与误差、是否收敛。",
+        "用相机投影矩阵 DLT 三角化出 3D 基座系坐标,并返回各视图的重投影像素与误差。",
         REPROJECT_SCHEMA,
     ),
     "visualize_frame": (
@@ -179,6 +179,38 @@ TOOLS = {
         "在图像上叠加 grid_size×grid_size 网格并标注 行-列 编号,用于粗定位。",
         VISUALIZE_GRID_SCHEMA,
     ),
+}
+
+# 模型可见参数的默认值来源:工具 -> {模型参数名: (配置分组属性名, 配置键)}
+# 这些默认值会注入 schema 的 default 字段(见 _tool_schema),供模型参考。
+# 必填参数(image/point/origin/orientation/points)与无默认的可选参数(label/image_size)不在此列。
+MODEL_PARAM_DEFAULTS = {
+    "visualize_frame": {
+        "axis_length": ("_frame", "axis_length"),
+        "radius": ("_frame", "radius"),
+        "labels": ("_frame", "labels"),
+    },
+    "visualize_point": {
+        "radius": ("_point", "radius"),
+        "color": ("_point", "color"),
+    },
+    "visualize_segment": {
+        "radius": ("_segment", "radius"),
+        "show_distance": ("_segment", "show_distance"),
+        "color": ("_segment", "color"),
+    },
+    "visualize_ray": {
+        "length": ("_ray", "length"),
+        "radius": ("_ray", "radius"),
+        "color": ("_ray", "color"),
+    },
+    "visualize_pixels": {
+        "radius_px": ("_pixels", "radius"),
+        "color": ("_pixels", "color"),
+    },
+    "visualize_grid": {
+        "grid_size": ("_grid", "grid_size"),
+    },
 }
 
 _COLORS = {
@@ -214,16 +246,25 @@ def _vec4(value, name: str) -> list[float]:
     return arr.tolist()
 
 
-def _parse_color(value, default):
-    """解析颜色:名称字符串或 [r,g,b];无法识别时返回 default。"""
-    if value is None:
-        return default
+def _as_rgb(value):
+    """把颜色名或 [r,g,b] 转成 RGB 三元组;无法识别时返回白色。"""
     if isinstance(value, str):
-        return _COLORS.get(value.strip().lower(), default)
+        return _COLORS.get(value.strip().lower(), (255, 255, 255))
     arr = np.asarray(value, dtype=float).reshape(-1)
     if arr.size == 3:
         return tuple(int(np.clip(c, 0, 255)) for c in arr)
-    return default
+    return (255, 255, 255)
+
+
+def _parse_color(value, default):
+    """解析颜色:名称字符串或 [r,g,b];value 为 None 时使用并解析 default。"""
+    raw = default if value is None else value
+    if isinstance(raw, str):
+        return _COLORS.get(raw.strip().lower(), _as_rgb(default))
+    arr = np.asarray(raw, dtype=float).reshape(-1)
+    if arr.size == 3:
+        return tuple(int(np.clip(c, 0, 255)) for c in arr)
+    return _as_rgb(default)
 
 
 class PerceptionExecutorNode(Node):
@@ -231,27 +272,72 @@ class PerceptionExecutorNode(Node):
 
     def __init__(self) -> None:
         super().__init__("nova_perception_executor")
+        # ---------- 环境/发现 ----------
         self.declare_parameter("camera_names", DEFAULT_CAMERAS)
         self.declare_parameter("image_topics", [], ParameterDescriptor(dynamic_typing=True))
         self.declare_parameter("env_ns", "/nova/env")
         self.declare_parameter("heartbeat_rate_hz", 1.0)
-        self.declare_parameter("grid_size", 8)
         self.declare_parameter("display_max_size", image_codec.DEFAULT_MAX_IMAGE_SIZE)
-        # 绘制相关默认参数
         self.declare_parameter("draw_topic", "/nova/perception/draw")
+        self.declare_parameter("image_cache_size", 20)
+        self.declare_parameter("camera_qos_depth", 1)
+        self.declare_parameter("camera_qos_reliable", False)
+
+        # ---------- 渲染(公用) ----------
         self.declare_parameter("draw_alpha", 0.45)
         self.declare_parameter("draw_supersample", 2)
         self.declare_parameter("draw_outline", True)
         self.declare_parameter("draw_outline_width", 2.0)
         self.declare_parameter("draw_outline_color", [0, 0, 0])
-        self.declare_parameter("label_font_scale", 10.0)
+        self.declare_parameter("draw_light_dir", [0.3, -0.5, 1.0])
+        self.declare_parameter("draw_shade_min", 0.5)
         self.declare_parameter("inject_image_max_size", 0)
-        self.declare_parameter("pixel_radius", 12.0)
-        self.declare_parameter("arrow_radius", 0.006)
-        self.declare_parameter("point_radius", 0.02)
-        self.declare_parameter("axis_length", 0.1)
         self.declare_parameter("segments", 16)
-        self.declare_parameter("image_cache_size", 20)
+
+        # ---------- 标签(公用;path 空=自动探测,优先 CJK) ----------
+        self.declare_parameter("label_font_px", 32)
+        self.declare_parameter("label_font_path", "")
+        self.declare_parameter("label_font_index", 2)
+        self.declare_parameter("label_stroke_width", 2)
+        self.declare_parameter("label_stroke_color", [0, 0, 0])
+
+        # ---------- 各工具参数(嵌套名,见 config/perception.yaml) ----------
+        self.declare_parameter("visualize_frame.axis_length", 0.1)
+        self.declare_parameter("visualize_frame.radius", 0.006)
+        self.declare_parameter("visualize_frame.labels", True)
+        self.declare_parameter("visualize_frame.label_font_px", 32)
+        self.declare_parameter("visualize_frame.color_x", [255, 70, 70])
+        self.declare_parameter("visualize_frame.color_y", [70, 200, 70])
+        self.declare_parameter("visualize_frame.color_z", [70, 120, 255])
+
+        self.declare_parameter("visualize_point.radius", 0.02)
+        self.declare_parameter("visualize_point.alpha", 1.0)
+        self.declare_parameter("visualize_point.shade", False)
+        self.declare_parameter("visualize_point.color", "red")
+        self.declare_parameter("visualize_point.label_font_px", 32)
+        self.declare_parameter("visualize_point.label_offset_px", 4)
+
+        self.declare_parameter("visualize_segment.radius", 0.006)
+        self.declare_parameter("visualize_segment.show_distance", True)
+        self.declare_parameter("visualize_segment.color", [80, 180, 255])
+        self.declare_parameter("visualize_segment.label_font_px", 32)
+
+        self.declare_parameter("visualize_ray.length", 0.2)
+        self.declare_parameter("visualize_ray.radius", 0.006)
+        self.declare_parameter("visualize_ray.color", [255, 120, 40])
+        self.declare_parameter("visualize_ray.label_font_px", 32)
+
+        self.declare_parameter("visualize_pixels.radius", 12.0)
+        self.declare_parameter("visualize_pixels.ring_ratio", 0.25)
+        self.declare_parameter("visualize_pixels.color", [255, 80, 80])
+        self.declare_parameter("visualize_pixels.label_font_px", 16)
+
+        self.declare_parameter("visualize_grid.grid_size", 8)
+        self.declare_parameter("visualize_grid.label_font_scale", 0.5)
+        self.declare_parameter("visualize_grid.label_font_min_px", 11)
+        self.declare_parameter("visualize_grid.label_font_max_px", 48)
+        self.declare_parameter("visualize_grid.line_color", [200, 200, 200])
+        self.declare_parameter("visualize_grid.label_color", [0, 200, 0])
 
         rate = float(self.get_parameter("heartbeat_rate_hz").value)
         self.camera_names = list(self.get_parameter("camera_names").value)
@@ -268,7 +354,6 @@ class PerceptionExecutorNode(Node):
                 cam: f"{self.env_ns}/camera/{cam}/image_raw" for cam in self.camera_names
             }
         self.env_info_srv = f"{self.env_ns}/info"
-        self._grid_size = int(self.get_parameter("grid_size").value)
         self._display_max_size = int(self.get_parameter("display_max_size").value)
 
         self._draw_topic = str(self.get_parameter("draw_topic").value)
@@ -277,20 +362,56 @@ class PerceptionExecutorNode(Node):
         self._outline = bool(self.get_parameter("draw_outline").value)
         self._outline_width = float(self.get_parameter("draw_outline_width").value)
         self._outline_color = _parse_color(self.get_parameter("draw_outline_color").value, (0, 0, 0))
-        self._label_font_scale = float(self.get_parameter("label_font_scale").value)
+        self._light_dir = [float(v) for v in self.get_parameter("draw_light_dir").value]
+        self._shade_min = float(self.get_parameter("draw_shade_min").value)
         self._inject_image_max_size = int(self.get_parameter("inject_image_max_size").value)
-        self._pixel_radius = float(self.get_parameter("pixel_radius").value)
-        self._arrow_radius = float(self.get_parameter("arrow_radius").value)
-        self._point_radius = float(self.get_parameter("point_radius").value)
-        self._axis_length = float(self.get_parameter("axis_length").value)
         self._segments = int(self.get_parameter("segments").value)
         self._image_cache_size = max(1, int(self.get_parameter("image_cache_size").value))
+        self._cam_qos = QoSProfile(
+            depth=max(1, int(self.get_parameter("camera_qos_depth").value)),
+            reliability=ReliabilityPolicy.RELIABLE
+            if bool(self.get_parameter("camera_qos_reliable").value)
+            else ReliabilityPolicy.BEST_EFFORT,
+        )
+
+        self._common_font_px = int(self.get_parameter("label_font_px").value)
+        self._font_path = str(self.get_parameter("label_font_path").value).strip()
+        self._font_index = int(self.get_parameter("label_font_index").value)
+        self._stroke_width = int(self.get_parameter("label_stroke_width").value)
+        self._stroke_color = _parse_color(self.get_parameter("label_stroke_color").value, (0, 0, 0))
+        self._frame = self._read_tool(
+            "visualize_frame",
+            ("axis_length", "radius", "labels", "label_font_px", "color_x", "color_y", "color_z"),
+        )
+        self._point = self._read_tool(
+            "visualize_point",
+            ("radius", "alpha", "shade", "color", "label_font_px", "label_offset_px"),
+        )
+        self._segment = self._read_tool(
+            "visualize_segment", ("radius", "show_distance", "color", "label_font_px")
+        )
+        self._ray = self._read_tool(
+            "visualize_ray", ("length", "radius", "color", "label_font_px")
+        )
+        self._pixels = self._read_tool(
+            "visualize_pixels", ("radius", "ring_ratio", "color", "label_font_px")
+        )
+        self._grid = self._read_tool(
+            "visualize_grid",
+            ("grid_size", "label_font_scale", "label_font_min_px", "label_font_max_px",
+             "line_color", "label_color"),
+        )
+        # 解析各模型可见参数的默认值(注入 schema.default 用)
+        self._model_defaults = {
+            tool: {param: getattr(self, attr)[key] for param, (attr, key) in params.items()}
+            for tool, params in MODEL_PARAM_DEFAULTS.items()
+        }
 
         self._frames: dict[str, np.ndarray] = {}
         self._camera_subs: set[str] = set()
         for cam, topic in self.image_topics.items():
             self._camera_subs.add(cam)
-            self.create_subscription(Image, topic, self._make_cam_cb(cam), _CAM_QOS)
+            self.create_subscription(Image, topic, self._make_cam_cb(cam), self._cam_qos)
         # 自动发现 /nova/env/obs 里声明的全部相机(含腕部相机等),便于在任意相机上绘制
         self.create_subscription(String, f"{self.env_ns}/obs", self._obs_cb, 10)
 
@@ -324,15 +445,42 @@ class PerceptionExecutorNode(Node):
             f"绘制话题={self._draw_topic}"
         )
 
+    def _read_tool(self, prefix: str, keys: tuple[str, ...]) -> dict:
+        """读取某工具的全部嵌套参数,返回 {key: value}。"""
+        return {key: self.get_parameter(f"{prefix}.{key}").value for key in keys}
+
+    def _font_px(self, tool_value) -> int:
+        """工具标签字号(绝对像素);<=0 时回退公用 label_font_px。"""
+        value = int(tool_value)
+        return value if value > 0 else self._common_font_px
+
+    def _font_kwargs(self) -> dict:
+        """传给 vision_geometry 绘制函数的字体/描边公用参数。"""
+        return {
+            "font_path": self._font_path or None,
+            "font_index": self._font_index,
+            "stroke_width": self._stroke_width,
+            "stroke_fill": self._stroke_color,
+        }
+
+    def _tool_schema(self, name: str) -> dict:
+        """返回带模型默认值(default)的工具 schema;深拷贝,不改动模块级 TOOLS。"""
+        schema = copy.deepcopy(TOOLS[name][1])
+        properties = schema.setdefault("properties", {})
+        for param, value in self._model_defaults.get(name, {}).items():
+            if param in properties:
+                properties[param]["default"] = value
+        return schema
+
     def _publish_heartbeat(self) -> None:
         """周期性发布心跳,声明本 executor 提供的全部工具。"""
         hb = ExecutorHeartbeat()
         hb.executor_name = self.get_name()
-        for name, (description, schema) in TOOLS.items():
+        for name, (description, _schema) in TOOLS.items():
             tool = ToolDescriptor()
             tool.name = name
             tool.description = description
-            tool.params_schema_json = json.dumps(schema, ensure_ascii=False)
+            tool.params_schema_json = json.dumps(self._tool_schema(name), ensure_ascii=False)
             tool.action_server_name = f"/{self.get_name()}/{name}/execute"
             hb.tools.append(tool)
         self._heartbeat_pub.publish(hb)
@@ -362,7 +510,7 @@ class PerceptionExecutorNode(Node):
             return
         self._camera_subs.add(cam)
         topic = f"{self.env_ns}/camera/{cam}/image_raw"
-        self.create_subscription(Image, topic, self._make_cam_cb(cam), _CAM_QOS)
+        self.create_subscription(Image, topic, self._make_cam_cb(cam), self._cam_qos)
         self.get_logger().info(f"新增相机订阅: {topic}")
 
     # ---------- /nova/env/info ----------
@@ -492,7 +640,7 @@ class PerceptionExecutorNode(Node):
         return image_id
 
     def _render(self, image, K, P, verts, faces, colors, params: dict) -> np.ndarray:
-        """按节点默认/工具参数渲染网格(alpha、描边可逐次覆盖)。"""
+        """按节点默认/工具参数渲染网格(alpha、描边、光照可逐次覆盖)。"""
         return vg.rasterize_mesh(
             image, verts, faces, colors, K, P,
             alpha=float(params.get("alpha", self._alpha)),
@@ -500,13 +648,10 @@ class PerceptionExecutorNode(Node):
             outline=bool(params.get("outline", self._outline)),
             outline_width=float(params.get("outline_width", self._outline_width)),
             outline_color=_parse_color(params.get("outline_color"), self._outline_color),
+            shade=bool(params.get("shade", True)),
+            light=self._light_dir,
+            shade_min=self._shade_min,
         )
-
-    def _label_font_px(self, K, Rt, anchor, radius) -> int:
-        """标签字号:只跟箭头半径有关(anchor 处半径的投影像素长度 × 系数)。"""
-        anchor = np.asarray(anchor, dtype=float)
-        px = vg.projected_length(K, Rt, anchor, anchor + np.array([radius, 0.0, 0.0]))
-        return int(np.clip(px * self._label_font_scale, 12, 64))
 
     def _encode_for_vlm(self, image: np.ndarray, params: dict) -> str:
         """把绘制图编码为注入 VLM 的 data URL;默认不缩放(与输入一致),可用参数调最长边。"""
@@ -555,59 +700,71 @@ class PerceptionExecutorNode(Node):
     def _draw_frame(self, params: dict) -> dict:
         """绘制一个 base 系坐标系(x/y/z 三色箭头)。"""
         image, cam, K, P, source = self._resolve_image(params["image"])
+        cfg = self._frame
         origin = _vec3(params.get("origin"), "origin")
         orientation = _vec4(params.get("orientation"), "orientation")
-        axis_length = float(params.get("axis_length", self._axis_length))
-        radius = float(params.get("radius", self._arrow_radius))
+        axis_length = float(params.get("axis_length", cfg["axis_length"]))
+        radius = float(params.get("radius", cfg["radius"]))
         segments = int(params.get("segments", self._segments))
+        axis_colors = tuple(_parse_color(c, c) for c in (cfg["color_x"], cfg["color_y"], cfg["color_z"]))
         R = vg.quat_to_matrix_xyzw(orientation)
         Rt = vg.decompose_projection(K, P)
         tips = [origin + R @ np.eye(3)[:, idx] * axis_length for idx in range(3)]
-        verts, faces, colors = vg.build_frame(origin, orientation, axis_length, radius, segments)
+        verts, faces, colors = vg.build_frame(origin, orientation, axis_length, radius, segments, axis_colors)
         out = self._render(image, K, P, verts, faces, colors, params)
-        if params.get("labels", True):
-            font_px = self._label_font_px(K, Rt, origin, radius)
-            for name, color, tip in zip("xyz", ((255, 70, 70), (70, 200, 70), (70, 120, 255)), tips):
+        if params.get("labels", cfg["labels"]):
+            font_px = self._font_px(cfg["label_font_px"])
+            for name, color, tip in zip("xyz", axis_colors, tips):
                 projected = vg.project_point_safe(K, Rt, tip)
                 if projected is not None:
-                    out = vg.draw_label(out, projected[:2], name, color, font_px=font_px)
+                    out = vg.draw_label(out, projected[:2], name, color, font_px=font_px,
+                                        **self._font_kwargs())
         points = [("origin", origin)] + [(f"{name} 轴", tip) for name, tip in zip("xyz", tips)]
         warnings = self._visibility_warnings(K, Rt, points, out.shape[1], out.shape[0])
         return self._finish_draw(out, cam, source, "visualize_frame", self._status(warnings), params)
 
     def _draw_point(self, params: dict) -> dict:
-        """绘制一个 base 系 3D 点(小球)。"""
+        """绘制一个 base 系 3D 点(小球);标签渲染在点正下方,避免遮挡。"""
         image, cam, K, P, source = self._resolve_image(params["image"])
+        cfg = self._point
         point = _vec3(params.get("point"), "point")
-        radius = float(params.get("radius", self._point_radius))
-        color = _parse_color(params.get("color"), (255, 220, 0))
+        radius = float(params.get("radius", cfg["radius"]))
+        color = _parse_color(params.get("color"), cfg["color"])
         Rt = vg.decompose_projection(K, P)
         verts, faces, colors = vg.build_sphere(point, radius, color, self._segments, max(4, self._segments // 2))
-        out = self._render(image, K, P, verts, faces, colors, params)
+        # 纯色不透明:与标签同色,不被光照/alpha 压暗
+        render_params = {**params, "alpha": float(cfg["alpha"]), "shade": bool(cfg["shade"])}
+        out = self._render(image, K, P, verts, faces, colors, render_params)
         label = params.get("label")
         if label:
             projected = vg.project_point_safe(K, Rt, point)
             if projected is not None:
-                out = vg.draw_label(out, projected[:2], str(label), color,
-                                    font_px=self._label_font_px(K, Rt, point, radius))
+                radius_px = vg.projected_length(K, Rt, point, point + np.array([radius, 0.0, 0.0]))
+                out = vg.draw_label_below(
+                    out, projected[:2], str(label), color,
+                    font_px=self._font_px(cfg["label_font_px"]),
+                    offset=float(cfg["label_offset_px"]) + radius_px,
+                    **self._font_kwargs(),
+                )
         warnings = self._visibility_warnings(K, Rt, [("point", point)], out.shape[1], out.shape[0])
         return self._finish_draw(out, cam, source, "visualize_point", self._status(warnings), params)
 
     def _draw_segment(self, params: dict) -> dict:
         """绘制一条 base 系 3D 线段(圆柱),可标注 3D 距离。"""
         image, cam, K, P, source = self._resolve_image(params["image"])
+        cfg = self._segment
         points = params.get("points")
         if not isinstance(points, list) or len(points) != 2:
             raise ValueError("points 必须是两个 3D 点")
         p0 = _vec3(points[0], "points[0]")
         p1 = _vec3(points[1], "points[1]")
-        radius = float(params.get("radius", self._arrow_radius))
-        color = _parse_color(params.get("color"), (80, 180, 255))
+        radius = float(params.get("radius", cfg["radius"]))
+        color = _parse_color(params.get("color"), cfg["color"])
         verts, faces, colors = vg.build_cylinder(p0, p1, radius, self._segments, color)
         out = self._render(image, K, P, verts, faces, colors, params)
         Rt = vg.decompose_projection(K, P)
         texts = []
-        if params.get("show_distance", True):
+        if params.get("show_distance", cfg["show_distance"]):
             texts.append(f"{float(np.linalg.norm(p1 - p0)) * 100:.1f}cm")
         if params.get("label"):
             texts.append(str(params["label"]))
@@ -616,18 +773,20 @@ class PerceptionExecutorNode(Node):
             mid = vg.project_point_safe(K, Rt, mid_point)
             if mid is not None:
                 out = vg.draw_label(out, mid[:2], " ".join(texts), color,
-                                    font_px=self._label_font_px(K, Rt, mid_point, radius))
+                                    font_px=self._font_px(cfg["label_font_px"]),
+                                    **self._font_kwargs())
         warnings = self._visibility_warnings(K, Rt, [("起点", p0), ("终点", p1)], out.shape[1], out.shape[0])
         return self._finish_draw(out, cam, source, "visualize_segment", self._status(warnings), params)
 
     def _draw_ray(self, params: dict) -> dict:
         """绘制一条 base 系 3D 射线(沿四元数局部 +z 的箭头)。"""
         image, cam, K, P, source = self._resolve_image(params["image"])
+        cfg = self._ray
         origin = _vec3(params.get("origin"), "origin")
         orientation = _vec4(params.get("orientation"), "orientation")
-        length = float(params.get("length", 0.2))
-        radius = float(params.get("radius", self._arrow_radius))
-        color = _parse_color(params.get("color"), (255, 120, 40))
+        length = float(params.get("length", cfg["length"]))
+        radius = float(params.get("radius", cfg["radius"]))
+        color = _parse_color(params.get("color"), cfg["color"])
         Rt = vg.decompose_projection(K, P)
         tip = origin + vg.quat_to_matrix_xyzw(orientation) @ np.array([0.0, 0.0, length])
         verts, faces, colors = vg.build_arrow(origin, orientation, length, radius,
@@ -638,7 +797,8 @@ class PerceptionExecutorNode(Node):
             projected = vg.project_point_safe(K, Rt, tip)
             if projected is not None:
                 out = vg.draw_label(out, projected[:2], str(label), color,
-                                    font_px=self._label_font_px(K, Rt, origin, radius))
+                                    font_px=self._font_px(cfg["label_font_px"]),
+                                    **self._font_kwargs())
         warnings = self._visibility_warnings(K, Rt, [("origin", origin), ("射线尖端", tip)],
                                              out.shape[1], out.shape[0])
         return self._finish_draw(out, cam, source, "visualize_ray", self._status(warnings), params)
@@ -710,8 +870,10 @@ class PerceptionExecutorNode(Node):
             labeled = [(None, value) for value in raw]
         else:
             raise ValueError("points 必须是 [[u,v],...] 或 {label:[u,v]}")
-        radius_native = float(params.get("radius_px", self._pixel_radius)) * (native_wh[0] / display_wh[0])
-        color = _parse_color(params.get("color"), (255, 80, 80))
+        cfg = self._pixels
+        radius_native = float(params.get("radius_px", cfg["radius"])) * (native_wh[0] / display_wh[0])
+        color = _parse_color(params.get("color"), cfg["color"])
+        font_px = self._font_px(cfg["label_font_px"])
         out = image
         warnings: list[str] = []
         for label, uv in labeled:
@@ -720,16 +882,27 @@ class PerceptionExecutorNode(Node):
             if not (0 <= float(uv[0]) < display_wh[0] and 0 <= float(uv[1]) < display_wh[1]):
                 warnings.append(f"点 {label or uv} 超出画面")
             native_px = image_codec.convert_points(list(uv), display_wh, native_wh)
-            out = vg.draw_marker(out, native_px, color, radius=radius_native, label=label)
+            out = vg.draw_marker(out, native_px, color, radius=radius_native, label=label,
+                                 font_px=font_px, ring_ratio=float(cfg["ring_ratio"]),
+                                 font_path=self._font_path or None, font_index=self._font_index)
         return self._finish_draw(out, cam, source, "visualize_pixels", self._status(warnings), params)
 
     def _draw_grid(self, params: dict) -> dict:
         """在图像上叠加 grid_size×grid_size 网格并返回显示分辨率下的格子尺寸。"""
         image, cam, K, P, source = self._resolve_image(params["image"])
+        cfg = self._grid
         native_wh = (image.shape[1], image.shape[0])
         display_wh = self._display_wh(source, native_wh, params.get("image_size"))
-        grid_size = max(2, int(params.get("grid_size", self._grid_size)))
-        out = vg.draw_grid(image, grid_size)
+        grid_size = max(2, int(params.get("grid_size", cfg["grid_size"])))
+        out = vg.draw_grid(
+            image, grid_size,
+            line_color=_parse_color(cfg["line_color"], cfg["line_color"]),
+            label_color=_parse_color(cfg["label_color"], cfg["label_color"]),
+            font_scale=float(cfg["label_font_scale"]),
+            font_min_px=int(cfg["label_font_min_px"]),
+            font_max_px=int(cfg["label_font_max_px"]),
+            font_path=self._font_path or None, font_index=self._font_index,
+        )
         result = self._finish_draw(out, cam, source, "visualize_grid", "drew successfully", params)
         result.update(
             {

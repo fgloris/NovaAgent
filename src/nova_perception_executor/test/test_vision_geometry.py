@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pytest
 
@@ -78,3 +80,36 @@ def test_draw_label_keeps_full_text_inside_image():
     middle = vg.draw_label(img, (150, 60), "abc123", (255, 255, 255), font_px=20)
     assert np.count_nonzero(corner) == np.count_nonzero(middle)
     assert np.count_nonzero(corner) > 0
+
+
+def test_draw_label_below_does_not_cover_point():
+    img = np.zeros((200, 300, 3), dtype=np.uint8)
+    out = vg.draw_label_below(img, (150, 60), "abc123", (255, 255, 255), font_px=20, offset=10)
+    assert np.count_nonzero(out[60]) == 0          # 点所在行不被文字覆盖
+    assert np.count_nonzero(out[70:]) > 0          # 文字落在点下方
+
+
+def test_draw_label_below_clamps_into_image():
+    img = np.zeros((120, 300, 3), dtype=np.uint8)
+    out = vg.draw_label_below(img, (150, 118), "abc", (255, 255, 255), font_px=20, offset=10)
+    assert out.shape == img.shape
+    assert np.count_nonzero(out) > 0
+
+
+def test_rasterize_mesh_shade_false_keeps_base_color():
+    K, P = _camera()
+    image = np.zeros((480, 640, 3), dtype=np.uint8)
+    color = (255, 70, 70)
+    verts, faces, colors = vg.build_sphere([0.0, 0.0, 0.0], 0.05, color, 16, 8)
+    out = vg.rasterize_mesh(image, verts, faces, colors, K, P,
+                            alpha=1.0, supersample=1, outline=False, shade=False)
+    assert (out == np.array(color, dtype=np.uint8)).all(axis=-1).any()
+
+
+def test_load_grid_font_cjk_ttc_index():
+    path = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+    if not os.path.exists(path):
+        pytest.skip("系统无 Noto Sans CJK 字体")
+    font = vg._load_grid_font(24, path=path, index=2)
+    assert font is not None
+    assert "SC" in font.getname()[0] or "CJK" in font.getname()[0]
