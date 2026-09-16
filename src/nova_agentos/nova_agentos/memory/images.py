@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import io
 import threading
 import time
 from dataclasses import dataclass, field
@@ -32,6 +33,17 @@ _DIFF_SIZE = 32  # 去重比较用的缩略图边长
 def _iso(ts: float) -> str:
     """epoch 秒 -> UTC ISO 字符串。"""
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ts)) + f".{int((ts % 1) * 1000):03d}Z"
+
+
+def _jpeg_size(data: bytes) -> tuple[int, int]:
+    """解码 JPEG 头部,返回 (宽, 高);失败返回 (0, 0)。"""
+    try:
+        from PIL import Image as PILImage
+
+        with PILImage.open(io.BytesIO(data)) as image:
+            return int(image.size[0]), int(image.size[1])
+    except Exception:
+        return 0, 0
 
 
 @dataclass
@@ -158,13 +170,14 @@ class ImageMemory:
             seq = self._seq
         filename = f"{int(ts * 1000)}-{camera}-{seq}.jpg"
         path = self.root / KIND_PROCESSED / filename
+        width, height = _jpeg_size(jpeg_bytes)
         record = ImageRecord(
             kind=KIND_PROCESSED,
             filename=filename,
             camera=camera,
             time=ts,
-            width=0,
-            height=0,
+            width=width,
+            height=height,
             origin=ORIGIN_TOOL,
             iso=_iso(ts),
             tool=tool,

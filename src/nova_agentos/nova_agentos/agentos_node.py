@@ -233,6 +233,7 @@ class AgentosNode(Node):
         """处理 StartSession:创建并激活一个新 session。"""
         try:
             record = self.sessions.start(request.name)
+            self.loop.activate_session(record.session_id)
             response.session_id = record.session_id
             response.success = True
             response.message = f"session 已创建并激活: {record.name}"
@@ -245,6 +246,7 @@ class AgentosNode(Node):
         """处理 ResumeSession:恢复已有 session 为 active。"""
         try:
             record = self.sessions.resume(request.session_id)
+            self.loop.activate_session(record.session_id)
             response.success = True
             response.name = record.name
             response.message = f"session 已恢复: {record.name}"
@@ -257,6 +259,7 @@ class AgentosNode(Node):
         """处理 EndSession:结束 session 并保留其文件。"""
         try:
             record = self.sessions.end(request.session_id)
+            self.loop.deactivate_session(record.session_id)
             response.success = True
             response.archive_path = str(self.sessions.root / record.session_id)
             response.message = f"session 已结束，文件已保留在 {response.archive_path}"

@@ -42,6 +42,7 @@ def test_processed_provenance_and_reload(tmp_path):
     assert described["origin"] == "tool"
     assert described["tool"] == "visualize_pixels"
     assert described["base"] == base.url
+    assert described["size"] == [60, 40]  # 从 JPEG 解码出的真实尺寸
 
     reloaded = ImageMemory(tmp_path)
     assert len(reloaded.processed_records()) == 1

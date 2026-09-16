@@ -460,10 +460,23 @@ class AgentLoop:
         self._thread: threading.Thread | None = None
         self._running = False
         self._current_memory: ImageMemory | None = None
+        self._active_session_id = ""
 
     def current_memory(self) -> ImageMemory | None:
-        """返回当前正在执行任务所属 session 的图像记忆(供采样器使用)。"""
+        """返回当前活动 session 的图像记忆(供采样器使用)。"""
         return self._current_memory
+
+    def activate_session(self, session_id: str) -> None:
+        """session 激活/恢复时预热图像记忆,使采样在任务开始前即可运行。"""
+        if self.image_memory_factory and session_id:
+            self._current_memory = self.image_memory_factory(session_id)
+            self._active_session_id = session_id
+
+    def deactivate_session(self, session_id: str) -> None:
+        """session 结束时停止其图像采样(文件保留)。"""
+        if session_id and session_id == self._active_session_id:
+            self._current_memory = None
+            self._active_session_id = ""
 
     def start(self) -> None:
         """启动后台任务消费线程。"""
@@ -495,6 +508,7 @@ class AgentLoop:
                     self.image_memory_factory(session_id) if self.image_memory_factory else None
                 )
                 self._current_memory = memory
+                self._active_session_id = session_id
                 TaskRunner(
                     task,
                     self.session_manager,

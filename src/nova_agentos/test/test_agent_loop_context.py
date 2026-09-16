@@ -187,3 +187,16 @@ def test_local_image_tools_list_and_fetch(tmp_path):
     assert processed.url in listing and "visualize_grid" in listing
     text, images = runner._fetch_history_image({"time": 100.0, "topic": "camA"})
     assert list(images) and "camA" in text
+
+
+def test_activate_session_preheats_image_memory(tmp_path):
+    memory = ImageMemory(tmp_path)
+    loop = AgentLoop(
+        _LLM(), _Skills(), _Adapter(), session_manager=SessionManager(tmp_path),
+        image_memory_factory=lambda _sid: memory,
+    )
+    assert loop.current_memory() is None
+    loop.activate_session("sess_x")
+    assert loop.current_memory() is memory
+    loop.deactivate_session("sess_x")
+    assert loop.current_memory() is None

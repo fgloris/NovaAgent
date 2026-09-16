@@ -132,7 +132,9 @@ def downscale(image: np.ndarray, max_size: int) -> np.ndarray:
         return np.asarray(image, dtype=np.uint8)
     from PIL import Image as PILImage
 
-    resized = PILImage.fromarray(np.asarray(image, dtype=np.uint8), mode="RGB").resize((cw, ch))
+    resized = PILImage.fromarray(np.asarray(image, dtype=np.uint8), mode="RGB").resize(
+        (cw, ch), PILImage.LANCZOS
+    )
     return np.asarray(resized)
 
 
