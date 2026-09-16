@@ -1,0 +1,8 @@
+# 列出所有 AgentOS session(含已结束)。
+---
+bool success
+string message
+string[] session_ids
+string[] names
+string[] statuses
+string[] updated_at

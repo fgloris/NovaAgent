@@ -212,6 +212,32 @@ class SessionManager:
                 raise ValueError(f"session 非 active: {session_id}")
             return record
 
+    def list(self) -> list[SessionRecord]:
+        """扫描根目录,返回全部 session(损坏或缺失文件跳过),按 updated_at 倒序。"""
+        with self._lock:
+            records: list[SessionRecord] = []
+            if self.root.exists():
+                for path in self.root.iterdir():
+                    if not path.is_dir():
+                        continue
+                    try:
+                        records.append(self._load_record(path.name))
+                    except (FileNotFoundError, ValueError):
+                        continue
+            records.sort(key=lambda r: r.updated_at, reverse=True)
+            return records
+
+    def rename(self, session_id: str, name: str) -> SessionRecord:
+        """修改 session 名称并落盘(名称去空白,空则保持原名)。"""
+        with self._lock:
+            record = self._load_record(session_id)
+            cleaned = name.strip()
+            if cleaned:
+                record.name = cleaned
+            record.updated_at = _now()
+            self._save_record(record)
+            return record
+
     def create_task(self, session_id: str, instruction: str) -> TaskMemory:
         """在 active session 中创建并登记一个新任务。"""
         with self._lock:

@@ -18,7 +18,7 @@ setup(
         (f"share/{package_name}/launch", glob("launch/*.launch.py")),
         *skill_files,
     ],
-    install_requires=["setuptools", "PyYAML", "numpy", "Pillow"],
+    install_requires=["setuptools", "PyYAML", "numpy", "Pillow", "textual>=0.80"],
     zip_safe=True,
     maintainer="ginger",
     maintainer_email="ginger@example.com",
@@ -27,7 +27,7 @@ setup(
     entry_points={
         "console_scripts": [
             "nova_agentos_node = nova_agentos.agentos_node:main",
-            "nova_agentos_cli = nova_agentos.agent_cli:main",
+            "nova_agentos_cli = nova_agentos.cli.main:main",
         ],
     },
 )

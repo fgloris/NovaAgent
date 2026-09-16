@@ -24,6 +24,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ResumeSession.srv"
   "srv/EndSession.srv"
   "srv/EnvInfo.srv"
+  "srv/ListSessions.srv"
+  "srv/RenameSession.srv"
   "action/MCPExecute.action"
   "action/EEFExecute.action"
   DEPENDENCIES builtin_interfaces action_msgs

@@ -28,8 +28,8 @@ session start/resume → RunTask(session_id, 入队,立即返回 task_id)
 | `vision_observer.py` | 订阅 `/nova/env/obs` 与 `/nova/env/camera/*/image_raw`,为每轮规划生成多模态观测消息 |
 | `robot_state_observer.py` | 从 `/nova/env/info` 发现机器人状态话题并订阅,每轮注入最新 EEF/关节/夹爪状态(与工具无关) |
 | `mcp_adapter.py` | 与 executor_manager 通信(查询工具 + 发 action goal) |
-| `agentos_node.py` | ROS 2 节点:RunTask 入队服务 + agent_msg 消息发布 |
-| `agent_cli.py` | 终端聊天 CLI:发消息 + 实时查看 agent 消息 + 调试命令 |
+| `agentos_node.py` | ROS 2 节点:RunTask/会话服务 + agent_msg 消息发布 + 首任务自动命名 |
+| `cli/` | 终端 TUI 包(Textual):会话自动创建、对话渲染、命令处理、`--plain` REPL |
 
 ## Skill 说明
 
@@ -45,9 +45,17 @@ ros2 launch nova_agentos system.launch.py
 # 单独启动 agentos
 ros2 run nova_agentos nova_agentos_node --ros-args -p skills_dir:=<skills目录>
 
-# 终端聊天 CLI
+# 终端聊天 TUI(启动即自动创建 session)
 ros2 run nova_agentos nova_agentos_cli
+
+# 行式 REPL(无 TUI,适合 ssh/调试)
+ros2 run nova_agentos nova_agentos_cli --plain
+
+# 启动时恢复指定 session
+ros2 run nova_agentos nova_agentos_cli --resume sess_xxx
 ```
+
+CLI 启动后自动创建新 session,首个任务由 AgentOS 用 VLM 概括为 `场景-做什么`(如「厨房-收拾桌面」)并改名;退出时标记 session 为 ended(文件保留,可 `--resume` 恢复)。
 
 ## 提交任务
 
@@ -61,31 +69,36 @@ ros2 service call /nova/agentos/run nova_interfaces/srv/RunTask "{session_id: 's
 ros2 topic echo /nova/agentos/agent_msg
 ```
 
-推荐用 CLI 交互:
+推荐用 CLI TUI 交互:
 
 ```
+◆ NovaAgent CLI 已连接。输入指令开始任务,或 /help 查看命令。
+✎ 已自动创建会话 (sess_xxx),首个任务后自动命名
 你> 请把桌面收拾干净
-[abc123][agent] 我先加载桌面整理的领域流程...
-[abc123][tool] 调用 load_skill: {"skill":"tidy_table"}
-[abc123][result] load_skill -> # 收拾桌面的领域经验...
-[abc123][tool] 调用 pi0_policy: {"instruction":"..."}
-[abc123][result] pi0_policy -> {"ok": true, "infer_steps": 10, ...}
-[abc123][agent] 完成,已收拾干净
-你> /ping
-  你的LLM: 850ms OK
-你> /reset     # 重置仿真环境
-你> /env       # 查询环境规格(相机/state/action 键)
-你> /quit
+◆ 我先加载桌面整理的领域流程...
+⚙ 调用 load_skill: {"skill":"tidy_table"}
+✔ load_skill -> # 收拾桌面的领域经验...
+⚙ 调用 pi0_policy: {"instruction":"..."}
+✔ pi0_policy -> {"ok": true, "infer_steps": 10, ...}
+◆ 完成,已收拾干净
+✎ 会话已命名: 厨房-收拾桌面
 ```
 
-多轮交互:直接再发一条消息即可,上下文会保留上一轮的对话。
+输入框支持多行(`Shift+Enter` 换行)、鼠标点击定位光标、↑/↓ 浏览历史、`/` 开头给出命令候选。
 
 ## CLI 命令
 
 | 命令 | 行为 |
 | --- | --- |
+| `/session list` | 列出所有 session(名称 + id + 状态) |
+| `/session new [name]` | 新建 session |
+| `/session resume <id>` | 恢复指定 session |
+| `/session rename <name>` | 重命名当前 session |
+| `/session info` | 查看当前 session |
+| `/session end` | 结束当前 session 并新建 |
 | `/reset` | 重置仿真环境(`/nova/env/reset`) |
 | `/ping` | 测每个 LLM provider 连接延迟 |
 | `/env` | 查询仿真环境规格(相机/state/action 键) |
+| `/clear` | 清空会话显示 |
 | `/help` | 显示帮助 |
-| `/quit` `/exit` | 退出 |
+| `/quit` | 退出(结束当前 session) |

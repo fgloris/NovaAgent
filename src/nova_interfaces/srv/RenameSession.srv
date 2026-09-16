@@ -1,0 +1,6 @@
+# 重命名指定 session。
+string session_id
+string name
+---
+bool success
+string message

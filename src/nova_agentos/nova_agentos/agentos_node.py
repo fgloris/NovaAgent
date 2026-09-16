@@ -3,6 +3,7 @@
 
 agent 全部消息(规划文本/工具调用与结果/完成)经全局话题 /nova/agentos/agent_msg 发布。
 """
+import threading
 from pathlib import Path
 
 import rclpy
@@ -11,7 +12,14 @@ from rclpy.node import Node
 
 from nova_common.llm_client import LLMClient
 from nova_interfaces.msg import TaskState
-from nova_interfaces.srv import EndSession, ResumeSession, RunTask, StartSession
+from nova_interfaces.srv import (
+    EndSession,
+    ListSessions,
+    RenameSession,
+    ResumeSession,
+    RunTask,
+    StartSession,
+)
 
 from nova_agentos.api_logger import ApiLogger
 from nova_agentos.agent_loop import AgentLoop
@@ -20,6 +28,14 @@ from nova_agentos.memory import SessionManager
 from nova_agentos.robot_state_observer import RobotStateObserver
 from nova_agentos.skill_store import SkillStore
 from nova_agentos.vision_observer import VisionObserver
+
+# 自动命名:这些占位名(或空名)会在首个任务时由 VLM 概括为"场景-做什么"
+_PLACEHOLDER_NAMES = {"", "default", "未命名", "新会话", "new session"}
+_NAME_PROMPT = (
+    "你是具身机器人会话的命名助手。根据用户的第一条指令,生成一个简短的会话名,"
+    "格式为『场景-做什么』,例如『厨房-收拾桌面』『客厅-拿水杯』。"
+    "只输出会话名本身,不要引号、不要标点解释,不超过 12 个字。"
+)
 
 
 class AgentosNode(Node):
@@ -105,6 +121,8 @@ class AgentosNode(Node):
         self.create_service(StartSession, "/nova/agentos/session/start", self._start_session_cb)
         self.create_service(ResumeSession, "/nova/agentos/session/resume", self._resume_session_cb)
         self.create_service(EndSession, "/nova/agentos/session/end", self._end_session_cb)
+        self.create_service(ListSessions, "/nova/agentos/session/list", self._list_sessions_cb)
+        self.create_service(RenameSession, "/nova/agentos/session/rename", self._rename_session_cb)
         self.get_logger().info(f"AgentOS 就绪,skill 目录: {skills_dir}")
 
     def _run_task_cb(self, request, response):
@@ -118,11 +136,50 @@ class AgentosNode(Node):
             return response
         task_id = task.task_id
         self.loop.submit(task_id, request.session_id, request.instruction)
+        self._maybe_name_session(task_id, request.session_id, request.instruction)
         response.task_id = task_id
         response.success = True
         response.message = "已入队,消息见 /nova/agentos/agent_msg"
         self.get_logger().info(f"任务 {task_id} 已入队: {request.instruction}")
         return response
+
+    def _maybe_name_session(self, task_id: str, session_id: str, instruction: str) -> None:
+        """首个任务且会话名仍是占位符时,后台线程用 VLM 概括为"场景-做什么"并改名。"""
+        try:
+            record = self.sessions.get(session_id, allow_ended=True)
+        except (FileNotFoundError, ValueError):
+            return
+        if len(record.task_ids) != 1 or record.name.strip() not in _PLACEHOLDER_NAMES:
+            return
+        threading.Thread(
+            target=self._name_session,
+            args=(task_id, session_id, instruction),
+            daemon=True,
+        ).start()
+
+    def _name_session(self, task_id: str, session_id: str, instruction: str) -> None:
+        """调用 VLM 生成会话名并改名;失败静默跳过,不影响任务执行。"""
+        try:
+            result = self.llm.chat(
+                [
+                    {"role": "system", "content": _NAME_PROMPT},
+                    {"role": "user", "content": instruction},
+                ],
+                temperature=0.2,
+                max_tokens=512,
+                task_id=task_id,
+                session_id=session_id,
+            )
+            name = (result.content or "").strip().strip("\"'“”‘’ \n")
+            name = name.splitlines()[0].strip() if name else ""
+            if not name:
+                return
+            name = name[:24]
+            self.sessions.rename(session_id, name)
+            self._publish(task_id, session_id, "working", name, False, "session_renamed")
+            self.get_logger().info(f"会话 {session_id} 已命名: {name}")
+        except Exception as exc:
+            self.get_logger().warn(f"会话自动命名失败: {exc}")
 
     def _start_session_cb(self, request, response):
         """处理 StartSession:创建并激活一个新 session。"""
@@ -160,6 +217,32 @@ class AgentosNode(Node):
             response.message = str(exc)
         return response
 
+    def _list_sessions_cb(self, request, response):
+        """处理 ListSessions:返回全部 session 的 id/名称/状态/更新时间。"""
+        try:
+            records = self.sessions.list()
+            response.session_ids = [r.session_id for r in records]
+            response.names = [r.name for r in records]
+            response.statuses = [r.status for r in records]
+            response.updated_at = [r.updated_at for r in records]
+            response.success = True
+            response.message = f"共 {len(records)} 个 session"
+        except Exception as exc:
+            response.success = False
+            response.message = str(exc)
+        return response
+
+    def _rename_session_cb(self, request, response):
+        """处理 RenameSession:修改 session 名称。"""
+        try:
+            record = self.sessions.rename(request.session_id, request.name)
+            response.success = True
+            response.message = f"已重命名: {record.name}"
+        except (FileNotFoundError, ValueError) as exc:
+            response.success = False
+            response.message = str(exc)
+        return response
+
     def _on_state(
         self,
         task_id: str,
@@ -169,16 +252,29 @@ class AgentosNode(Node):
         done: bool,
         kind: str,
     ) -> None:
-        """agent loop 线程回调:把状态事件发布到全局话题(消息按 task_id 区分)。"""
+        """agent loop 线程回调:把状态事件发布到全局话题(消息按 task_id/session_id 区分)。"""
+        self._publish(task_id, session_id, status, message, done, kind)
+        if done:
+            self.get_logger().info(f"任务 {task_id} [{status}]: {message}")
+
+    def _publish(
+        self,
+        task_id: str,
+        session_id: str,
+        status: str,
+        message: str,
+        done: bool,
+        kind: str,
+    ) -> None:
+        """构造并发布一条 TaskState。"""
         msg = TaskState()
         msg.task_id = task_id
+        msg.session_id = session_id
         msg.status = status
         msg.done = done
         msg.kind = kind
         msg.message = message
         self._msg_pub.publish(msg)
-        if done:
-            self.get_logger().info(f"任务 {task_id} [{status}]: {message}")
 
     def destroy_node(self) -> bool:
         """销毁节点前先停止后台 agent 循环线程。"""
