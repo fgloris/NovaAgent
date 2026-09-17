@@ -71,7 +71,7 @@ class AgentosNode(Node):
         self.declare_parameter("memory_dir", "")
         self.declare_parameter("image_sample_period_sec", 1.0)
         self.declare_parameter("image_diff_mse_threshold", 0.0005)
-        self.declare_parameter("image_state_diff_threshold", 0.005)
+        self.declare_parameter("image_state_diff_threshold", 0.5)
         self.declare_parameter("image_history_depth", 4)
         self.declare_parameter("image_processed_depth", 3)
         self.declare_parameter("image_link_max", 60)

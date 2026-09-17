@@ -51,7 +51,7 @@ class NovaCliApp(App):
     # ---------- 布局 ----------
     def compose(self) -> ComposeResult:
         yield ConversationView(id="conversation")
-        yield Static("Enter 发送 · Shift+Enter 换行 · /help 命令", id="hint")
+        yield Static("Enter 发送 · Shift+Enter 换行 · Ctrl-C 复制 · /help 命令", id="hint")
         yield Prompt(id="prompt")
         yield StatusBar()
 
@@ -141,7 +141,7 @@ class NovaCliApp(App):
                 self.query_one("#hint", Static).update(Text("  ".join(matches[:6]), style=theme.MUTED))
                 return
         self.query_one("#hint", Static).update(
-            Text("Enter 发送 · Shift+Enter 换行 · /help 命令", style=theme.MUTED)
+            Text("Enter 发送 · Shift+Enter 换行 · Ctrl-C 复制 · /help 命令", style=theme.MUTED)
         )
 
     # ---------- 任务 ----------

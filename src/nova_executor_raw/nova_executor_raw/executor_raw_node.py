@@ -16,7 +16,7 @@ from .ros_backend import RosEEFBackend
 
 TOOLS = {
     "move_eef": (
-        "Execute an absolute Cartesian EEF trajectory",
+        "Execute an absolute Cartesian EEF trajectory. ",
         {
             "type": "object",
             "properties": {
@@ -34,14 +34,20 @@ TOOLS = {
                                 "minItems": 4,
                                 "maxItems": 4,
                             },
-                            "gripper": {"type": "number"},
+                            "gripper": {
+                                "type": "number",
+                                "description": "取值0~1, 1.0=close, 0.0=open",
+                            },
                         },
                         "required": ["position", "orientation"],
                     },
                 },
                 "max_linear_speed": {"type": "number"},
                 "max_angular_speed": {"type": "number"},
-                "max_gripper_speed": {"type": "number"},
+                "max_gripper_speed": {
+                    "type": "number",
+                    "description": "夹爪动作速度上限",
+                },
             },
             "required": ["waypoints"],
         },
@@ -58,6 +64,14 @@ TOOLS = {
                     "minItems": 1,
                     "items": {
                         "type": "object",
+                        "properties": {
+                            "position_delta": {"type": "array", "minItems": 3, "maxItems": 3},
+                            "rotation_delta": {"type": "array", "minItems": 4, "maxItems": 4},
+                            "gripper": {
+                                "type": "number",
+                                "description": "取值0~1, 1.0=close, 0.0=open",
+                            },
+                        },
                         "required": ["position_delta", "rotation_delta"],
                     },
                 },
