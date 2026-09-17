@@ -59,6 +59,26 @@ def test_agent_loop_starts_with_optional_robot_context(tmp_path, with_provider):
     assert manager.load_task(session.session_id, task.task_id).outcome == "success"
 
 
+def test_system_prompt_mentions_image_memory_depths(tmp_path):
+    manager = SessionManager(tmp_path)
+    session = manager.start()
+    task = manager.create_task(session.session_id, "draw")
+    memory = ImageMemory(tmp_path / "memory", processed_max=9)
+    llm = _CapturingLLM()
+    loop = AgentLoop(
+        llm, _Skills(), _Adapter(), session_manager=manager,
+        image_memory_factory=lambda _sid: memory,
+        image_history_depth=5, image_processed_depth=2,
+    )
+    loop._running = True
+    loop.queue.put((task.task_id, session.session_id, task.instruction))
+    loop.queue.put(None)
+    loop._run()
+    system = llm.messages[0]["content"]
+    assert "图像记忆" in system
+    assert "9" in system and "2" in system and "5" in system
+
+
 def test_context_builder_injects_robot_and_instruction_but_persists_only_identity(tmp_path):
     manager = SessionManager(tmp_path)
     session = manager.start()

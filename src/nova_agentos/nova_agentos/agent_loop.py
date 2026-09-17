@@ -174,6 +174,27 @@ class TaskRunner:
         self.image_history_depth = max(1, int(image_history_depth))
         self.image_processed_depth = max(0, int(image_processed_depth))
         self.runtime_messages: list[dict] = []
+        self.system_prompt = self._build_system_prompt()
+
+    def _build_system_prompt(self) -> str:
+        """在基础提示词后追加图像记忆说明(深度取自当前配置)。"""
+        processed_max = self.images.processed_max if self.images is not None else "若干"
+        memory = (
+            "# 图像记忆\n"
+            "- 每次上下文按 current → processed → history 顺序提供图像:\n"
+            "  - current:各相机最新原始帧(相机名可直接作为 image 参数)\n"
+            f"  - processed:工具返回/绘画图,共保留最近 {processed_max} 张,"
+            f"其中最近 {self.image_processed_depth} 张逐张渲染,更早的仅列出 url\n"
+            f"  - history:每链路最近 {self.image_history_depth} 张历史帧(带时间戳)\n"
+            "- 叠加规则:每张 processed 是「在某张底图 base 上叠加本次操作」的结果。"
+            "若以 current 或原始历史图作 image 重新绘制,之前画在别的图上的标注不会带入新图,"
+            "且旧图可能因超出渲染深度而不再显示。要保留并累积标注,"
+            "请把上一张绘画图的 url 作为 image 参数继续绘制。\n"
+            "- 世界变化:move_eef/move_eef_relative 默认作废并清空全部 processed"
+            "(abort_previous_processed=true),history 保留;"
+            "需要时可用 fetch_image_from_url(url) 或 fetch_history_image(time, topic) 取回图像。"
+        )
+        return SYSTEM_BASE + "\n\n" + memory
 
     def run(self) -> None:
         """任务主循环:每轮把最新上下文与观测喂给 LLM,执行其请求的工具调用。"""
@@ -189,7 +210,7 @@ class TaskRunner:
                 session.context["_tasks"] = [
                     item.to_dict() for item in previous if item.task_id != self.task.task_id
                 ]
-                session.context["system_prompt"] = SYSTEM_BASE
+                session.context["system_prompt"] = self.system_prompt
                 messages = self.context_builder.build(
                     session,
                     self.task,
@@ -560,7 +581,7 @@ class TaskRunner:
         self.task.finish(outcome, summary)
         self.manager.save_task(self.task)
         session = self.manager.get(self.task.session_id, allow_ended=True)
-        session.context["system_prompt"] = SYSTEM_BASE
+        session.context["system_prompt"] = self.system_prompt
         session.context["_tasks"] = [
             item.to_dict() for item in self.manager.tasks(self.task.session_id)
         ]
