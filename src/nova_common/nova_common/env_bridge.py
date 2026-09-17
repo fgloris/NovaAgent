@@ -12,6 +12,7 @@ os.environ.setdefault("ROS_LOG_DIR", "/tmp/novaagent_ros_logs")
 os.makedirs(os.environ["ROS_LOG_DIR"], exist_ok=True)
 
 import numpy as np
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage, Image
@@ -70,7 +71,11 @@ class EnvBridgeBase(Node):
         )
         self.obs_pub = self.create_publisher(String, "/nova/env/obs", 10)
 
-        self.create_service(EnvInfo, "/nova/env/info", self.info_callback)
+        # info 只读缓存字典,单独回调组避免被阻塞的 step/reset 挤出(否则 perception 会超时)
+        self._info_cg = ReentrantCallbackGroup()
+        self.create_service(
+            EnvInfo, "/nova/env/info", self.info_callback, callback_group=self._info_cg
+        )
         self.create_service(Trigger, "/nova/env/reset", self.reset_callback)
         self.create_service(Trigger, "/nova/env/step_zero", self.step_zero_callback)
 
