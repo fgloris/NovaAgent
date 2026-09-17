@@ -51,6 +51,21 @@ def test_processed_provenance_and_reload(tmp_path):
     assert reloaded.nearest_history("camA", 10.4).time == 10.0
 
 
+def test_clear_processed_removes_files_and_refs_but_keeps_history(tmp_path):
+    memory = ImageMemory(tmp_path)
+    base = memory.save_history("camA", _frame(7), 1.0)
+    first = memory.save_processed(_jpeg_bytes(_frame(7)), "camA", "visualize_grid", {}, base.url, 2.0)
+    second = memory.save_processed(_jpeg_bytes(_frame(8)), "camA", "visualize_grid", {}, base.url, 3.0)
+    path = memory.path_of(first)
+    assert path.exists()
+
+    assert memory.clear_processed() == 2
+    assert memory.processed_records() == []
+    assert not path.exists()
+    assert not memory.path_of(second).exists()
+    assert memory.find(base.url) is not None  # history 不受影响
+
+
 def test_refresh_current_overwrites_and_tracks_camera(tmp_path):
     memory = ImageMemory(tmp_path)
     memory.refresh_current({"camA": (_frame(5), 100.0)})

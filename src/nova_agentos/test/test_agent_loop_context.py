@@ -180,6 +180,8 @@ def _runner_with_memory(tmp_path):
     runner.image_history_depth = 4
     runner.image_processed_depth = 3
     runner.frame_provider = None
+    runner.task = SimpleNamespace(task_id="t1", add_event=lambda *a, **k: None)
+    runner.manager = SimpleNamespace(save_task=lambda *a, **k: None)
     return runner, processed
 
 
@@ -198,6 +200,46 @@ def test_local_image_tools_list_and_fetch(tmp_path):
     assert "fetch_history_image" in fetched.note
     assert fetched.base  # 指向原历史图
     assert "fetch_history_image" in text
+
+
+def test_fetch_image_from_url_promotes_record_to_processed(tmp_path):
+    runner, processed = _runner_with_memory(tmp_path)
+    before = len(runner.images.processed_records())
+    text, images = runner._fetch_image_from_url({"ref": processed.url})
+    assert images == {}
+    records = runner.images.processed_records()
+    assert len(records) == before + 1
+    fetched = records[-1]
+    assert fetched.tool == "fetch_image_from_url"
+    assert fetched.base == processed.url
+    assert "fetch_image_from_url" in text
+    assert runner._fetch_image_from_url({"ref": "file://processed/missing.jpg"})[0].startswith("未找到图像")
+
+
+class _AbortAdapter:
+    def __init__(self, abort=True):
+        self.abort = abort
+
+    def execute(self, name, params, trace_id, timeout_sec=120.0, feedback_callback=None):
+        return {"ok": True, "abort_previous_processed": self.abort}
+
+
+def test_run_tool_abort_previous_processed_clears_processed(tmp_path):
+    runner, processed = _runner_with_memory(tmp_path)
+    path = runner.images.path_of(processed)
+    runner.adapter = _AbortAdapter(abort=True)
+    text, images = runner._run_tool("move_eef", {"waypoints": []})
+    assert images == {}
+    assert runner.images.processed_records() == []
+    assert not path.exists()
+    assert "abort_previous_processed" not in text
+
+
+def test_run_tool_keeps_processed_when_abort_false(tmp_path):
+    runner, processed = _runner_with_memory(tmp_path)
+    runner.adapter = _AbortAdapter(abort=False)
+    runner._run_tool("move_eef", {"waypoints": []})
+    assert len(runner.images.processed_records()) == 1
 
 
 def test_image_context_dedups_repeated_urls(tmp_path):

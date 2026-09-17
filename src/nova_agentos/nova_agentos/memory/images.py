@@ -251,6 +251,15 @@ class ImageMemory:
             self._unlink(old)
         return record
 
+    def clear_processed(self) -> int:
+        """清空全部工具返回图:删除文件并清除引用,返回删除数量。"""
+        with self._lock:
+            removed = self._processed
+            self._processed = []
+        for record in removed:
+            self._unlink(record)
+        return len(removed)
+
     # ---------- 查询 ----------
 
     def current_records(self) -> list[ImageRecord]:

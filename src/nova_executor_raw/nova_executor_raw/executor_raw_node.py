@@ -48,6 +48,11 @@ TOOLS = {
                     "type": "number",
                     "description": "夹爪动作速度上限",
                 },
+                "abort_previous_processed": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "本次移动会改变视角/环境,是否作废并清空此前所有工具返回图(processed);默认 true,若仍需引用旧工具图请传 false",
+                },
             },
             "required": ["waypoints"],
         },
@@ -69,11 +74,16 @@ TOOLS = {
                             "rotation_delta": {"type": "array", "minItems": 4, "maxItems": 4},
                             "gripper": {
                                 "type": "number",
-                                "description": "取值0~1, 1.0=close, 0.0=open",
+                                "description": "夹爪目标: >=0.5 闭合, <0.5 张开(闭合推荐 1.0, 张开推荐 0.0 或 -1.0);省略则沿用上一次命令",
                             },
                         },
                         "required": ["position_delta", "rotation_delta"],
                     },
+                },
+                "abort_previous_processed": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "本次移动会改变视角/环境,是否作废并清空此前所有工具返回图(processed);默认 true,若仍需引用旧工具图请传 false",
                 },
             },
             "required": ["waypoints"],
@@ -199,6 +209,7 @@ class ExecutorRawNode(Node):
                     lambda: goal_handle.is_cancel_requested,
                     p,
                 )
+                out["abort_previous_processed"] = bool(p.get("abort_previous_processed", True))
                 r = MCPExecute.Result()
                 r.success = out.get("success", False)
                 r.error = out.get("error", "")

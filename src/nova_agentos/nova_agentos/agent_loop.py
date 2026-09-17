@@ -117,7 +117,25 @@ FETCH_HISTORY_TOOL = {
     },
 }
 
-LOCAL_TOOLS = [LOAD_SKILL_TOOL, LOAD_DOC_TOOL, LIST_IMAGES_TOOL, FETCH_HISTORY_TOOL]
+FETCH_IMAGE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "fetch_image_from_url",
+        "description": "按 url 取回一张已存在的图像(current/processed/history 均可)并注入上下文的 processed 图像部分,返回其描述与 url",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "图像 url(file://<kind>/<file>)或图像 id",
+                }
+            },
+            "required": ["ref"],
+        },
+    },
+}
+
+LOCAL_TOOLS = [LOAD_SKILL_TOOL, LOAD_DOC_TOOL, LIST_IMAGES_TOOL, FETCH_HISTORY_TOOL, FETCH_IMAGE_TOOL]
 
 class TaskRunner:
     """执行单个任务的 ReAct 循环:构造上下文 -> LLM 决策 -> 调工具,直到 finish 或超限。"""
@@ -311,6 +329,8 @@ class TaskRunner:
                 return self._list_accessible_images(args), {}
             if name == "fetch_history_image":
                 return self._fetch_history_image(args)
+            if name == "fetch_image_from_url":
+                return self._fetch_image_from_url(args)
 
             call_args = self._prepare_executor_args(args)
 
@@ -329,6 +349,12 @@ class TaskRunner:
                 feedback_callback=feedback,
             )
             stripped, images = split_images(result)
+            if (
+                self.images is not None
+                and isinstance(stripped, dict)
+                and stripped.pop("abort_previous_processed", False)
+            ):
+                self.images.clear_processed()
             if self.images is not None and images:
                 stripped["images"] = self._store_processed(name, call_args, stripped, images)
             return json.dumps(stripped, ensure_ascii=False), {}
@@ -414,6 +440,29 @@ class TaskRunner:
             record.url,
             time.time(),
             note="这是由 fetch_history_image 工具从历史图像调取的图片",
+        )
+        return json.dumps(fetched.describe(), ensure_ascii=False), {}
+
+    def _fetch_image_from_url(self, args: dict) -> tuple[str, dict[str, str]]:
+        """按 url 取回已存在的图像,提升为 processed(与其它工具图同语义,可再次引用)。"""
+        if self.images is None:
+            return "图像记忆未启用", {}
+        ref = str(args.get("ref", ""))
+        record = self.images.find(ref)
+        if record is None:
+            return f"未找到图像: {ref}", {}
+        try:
+            jpeg_bytes = self.images.path_of(record).read_bytes()
+        except OSError as exc:
+            return f"图像读取失败: {exc}", {}
+        fetched = self.images.save_processed(
+            jpeg_bytes,
+            record.camera,
+            "fetch_image_from_url",
+            {"ref": record.url},
+            record.url,
+            time.time(),
+            note="这是由 fetch_image_from_url 工具按 url 调取的图片",
         )
         return json.dumps(fetched.describe(), ensure_ascii=False), {}
 
